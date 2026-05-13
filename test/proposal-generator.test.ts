@@ -44,17 +44,17 @@ describe('ProposalGenerator', () => {
   // --------------------------------------------------------------------------
   // 1. Empty pattern list → empty proposals
   // --------------------------------------------------------------------------
-  it('returns empty array when given no patterns', () => {
-    const proposals = generator.generateProposals([]);
+  it('returns empty array when given no patterns', async () => {
+    const proposals = await generator.generateProposals([]);
     expect(proposals).toEqual([]);
   });
 
   // --------------------------------------------------------------------------
   // 2. configuration_optimization pattern → proposal
   // --------------------------------------------------------------------------
-  it('generates a proposal for a configuration_optimization pattern', () => {
+  it('generates a proposal for a configuration_optimization pattern', async () => {
     const pattern = makeConfigPattern();
-    const proposals = generator.generateProposals([pattern]);
+    const proposals = await generator.generateProposals([pattern]);
 
     expect(proposals.length).toBe(1);
     const p = proposals[0];
@@ -65,9 +65,9 @@ describe('ProposalGenerator', () => {
   // --------------------------------------------------------------------------
   // 3. coverage_gap pattern → library_expansion proposal
   // --------------------------------------------------------------------------
-  it('generates a library_expansion proposal for a coverage_gap pattern', () => {
+  it('generates a library_expansion proposal for a coverage_gap pattern', async () => {
     const pattern = makePattern('coverage_gap', { source_tools: ['GMirror'] });
-    const proposals = generator.generateProposals([pattern]);
+    const proposals = await generator.generateProposals([pattern]);
 
     expect(proposals.length).toBe(1);
     expect(proposals[0].proposal_type).toBe('library_expansion');
@@ -77,9 +77,9 @@ describe('ProposalGenerator', () => {
   // --------------------------------------------------------------------------
   // 4. drift_detection pattern → calibration_adjustment proposal
   // --------------------------------------------------------------------------
-  it('generates a calibration_adjustment proposal for a drift_detection pattern', () => {
+  it('generates a calibration_adjustment proposal for a drift_detection pattern', async () => {
     const pattern = makePattern('drift_detection', { source_tools: ['GToM'] });
-    const proposals = generator.generateProposals([pattern]);
+    const proposals = await generator.generateProposals([pattern]);
 
     expect(proposals.length).toBe(1);
     expect(proposals[0].proposal_type).toBe('calibration_adjustment');
@@ -89,12 +89,12 @@ describe('ProposalGenerator', () => {
   // --------------------------------------------------------------------------
   // 5. cross_tool_correlation pattern → workflow_optimization proposal
   // --------------------------------------------------------------------------
-  it('generates a workflow_optimization proposal for a cross_tool_correlation pattern', () => {
+  it('generates a workflow_optimization proposal for a cross_tool_correlation pattern', async () => {
     const pattern = makePattern('cross_tool_correlation', {
       source_tools: ['GOrchestrator', 'GMirror'],
       confidence: 0.75,
     });
-    const proposals = generator.generateProposals([pattern]);
+    const proposals = await generator.generateProposals([pattern]);
 
     expect(proposals.length).toBe(1);
     expect(proposals[0].proposal_type).toBe('workflow_optimization');
@@ -104,40 +104,40 @@ describe('ProposalGenerator', () => {
   // --------------------------------------------------------------------------
   // 6. Unhandled pattern types (failure_mode_cluster, cost_anomaly) → skip
   // --------------------------------------------------------------------------
-  it('skips unhandled pattern types and returns no proposals for them', () => {
+  it('skips unhandled pattern types and returns no proposals for them', async () => {
     const patterns = [
       makePattern('failure_mode_cluster'),
       makePattern('cost_anomaly'),
     ];
-    const proposals = generator.generateProposals(patterns);
+    const proposals = await generator.generateProposals(patterns);
     expect(proposals).toEqual([]);
   });
 
   // --------------------------------------------------------------------------
   // 7. Multiple patterns → one proposal each (for handled types)
   // --------------------------------------------------------------------------
-  it('generates one proposal per handled pattern', () => {
+  it('generates one proposal per handled pattern', async () => {
     const patterns = [
       makeConfigPattern(),
       makePattern('coverage_gap', { source_tools: ['GStack'] }),
       makePattern('drift_detection', { source_tools: ['GOrchestrator'] }),
       makePattern('cross_tool_correlation', { source_tools: ['GBrain'] }),
     ];
-    const proposals = generator.generateProposals(patterns);
+    const proposals = await generator.generateProposals(patterns);
     expect(proposals.length).toBe(4);
   });
 
   // --------------------------------------------------------------------------
   // 8. Proposal required fields
   // --------------------------------------------------------------------------
-  it('all proposals have required fields with correct types', () => {
+  it('all proposals have required fields with correct types', async () => {
     const patterns = [
       makeConfigPattern(),
       makePattern('coverage_gap', { source_tools: ['GMirror'] }),
       makePattern('drift_detection', { source_tools: ['GToM'] }),
       makePattern('cross_tool_correlation'),
     ];
-    const proposals = generator.generateProposals(patterns);
+    const proposals = await generator.generateProposals(patterns);
 
     for (const p of proposals) {
       expect(p.proposal_id).toMatch(
@@ -170,17 +170,17 @@ describe('ProposalGenerator', () => {
   // --------------------------------------------------------------------------
   // 9. configuration_optimization without metadata.config → no proposal
   // --------------------------------------------------------------------------
-  it('skips configuration_optimization pattern that has no metadata.config', () => {
+  it('skips configuration_optimization pattern that has no metadata.config', async () => {
     const pattern = makePattern('configuration_optimization');
     // No metadata field → generateConfigProposal returns null
-    const proposals = generator.generateProposals([pattern]);
+    const proposals = await generator.generateProposals([pattern]);
     expect(proposals).toEqual([]);
   });
 
   // --------------------------------------------------------------------------
   // 10. approveProposal / rejectProposal return updated status
   // --------------------------------------------------------------------------
-  it('approveProposal returns a proposal with status approved', () => {
+  it('approveProposal returns a proposal with status approved', async () => {
     const id = uuidv4();
     const approved = generator.approveProposal(id, 'alice');
     expect(approved).not.toBeNull();
@@ -189,7 +189,7 @@ describe('ProposalGenerator', () => {
     expect(typeof approved!.reviewed_at).toBe('string');
   });
 
-  it('rejectProposal returns a proposal with status rejected', () => {
+  it('rejectProposal returns a proposal with status rejected', async () => {
     const id = uuidv4();
     const rejected = generator.rejectProposal(id, 'bob');
     expect(rejected).not.toBeNull();

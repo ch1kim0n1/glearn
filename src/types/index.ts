@@ -66,6 +66,7 @@ export const CounterfactualEvaluationSchema = z.object({
   statistical_significance: z.number().min(0).max(1),
   conclusion: z.enum(['positive', 'neutral', 'negative']),
   recommendation: z.enum(['apply', 'ignore', 'needs_more_data']),
+  reasoning: z.string().optional(),
   evaluated_at: z.string().datetime(),
 });
 
@@ -234,3 +235,94 @@ export const CoverageGapSchema = z.object({
 });
 
 export type CoverageGap = z.infer<typeof CoverageGapSchema>;
+
+// ============================================================================
+// Learning Verdict
+// ============================================================================
+
+export const LearningVerdictSchema = z.object({
+  verdict_id: z.string().uuid(),
+  learning_run_id: z.string().uuid(),
+  overall: z.enum(['successful', 'partial', 'failed', 'needs_more_data']),
+  patterns_found: z.number().int().nonnegative(),
+  patterns_validated: z.number().int().nonnegative(),
+  proposals_generated: z.number().int().nonnegative(),
+  proposals_applied: z.number().int().nonnegative(),
+  data_quality_score: z.number().min(0).max(1),
+  statistical_significance: z.number().min(0).max(1),
+  insights: z.array(z.string()),
+  limitations: z.array(z.string()),
+  created_at: z.string().datetime(),
+  execution_receipt: z.any().optional(), // ExecutionReceipt from quality-rubric
+});
+
+export type LearningVerdict = z.infer<typeof LearningVerdictSchema>;
+
+// ============================================================================
+// Multi-Model Consensus Types
+// ============================================================================
+
+export const MultiModelConfigSchema = z.object({
+  default_tier: z.enum(['tier1', 'tier2', 'tier3']),
+  escalation_enabled: z.boolean(),
+  escalation_triggers: z.object({
+    min_confidence: z.number().min(0).max(1),
+    min_quality_score: z.number().min(0).max(1),
+    max_ambiguity: z.number().min(0).max(1),
+  }),
+  consensus_threshold: z.number().min(0).max(1),
+  cost_budget_usd_per_hour: z.number().positive(),
+  allow_tier3: z.boolean(),
+});
+
+export type MultiModelConfig = z.infer<typeof MultiModelConfigSchema>;
+
+export const ModelTierSchema = z.enum(['tier1', 'tier2', 'tier3']);
+
+export type ModelTier = z.infer<typeof ModelTierSchema>;
+
+export const TierConfigSchema = z.object({
+  name: z.string(),
+  model_id: z.string(),
+  cost_per_1k_tokens_usd: z.number(),
+  avg_latency_ms: z.number(),
+  use_case: z.string(),
+});
+
+export type TierConfig = z.infer<typeof TierConfigSchema>;
+
+export const EscalationMetricsSchema = z.object({
+  total_tasks: z.number().int(),
+  escalated_tasks: z.number().int(),
+  tier1_success_rate: z.number().min(0).max(1),
+  tier2_success_rate: z.number().min(0).max(1),
+  tier3_success_rate: z.number().min(0).max(1),
+  tier1_count: z.number().int(),
+  tier2_count: z.number().int(),
+  tier3_count: z.number().int(),
+  avg_cost_per_task_usd: z.number(),
+  avg_latency_ms: z.number(),
+  tier1_avg_latency_ms: z.number(),
+  tier2_avg_latency_ms: z.number(),
+  tier3_avg_latency_ms: z.number(),
+  consensus_agreement_rate: z.number().min(0).max(1),
+  budget_remaining_usd: z.number(),
+});
+
+export type EscalationMetrics = z.infer<typeof EscalationMetricsSchema>;
+
+export const ConsensusResultSchema = z.object({
+  similarity_score: z.number().min(0).max(1),
+  decision: z.enum(['accept_tier1', 'accept_tier2', 'accept_tier3', 'merge']),
+  reason: z.string(),
+  tier1_output: z.any(),
+  tier2_output: z.any(),
+  final_output: z.any(),
+});
+
+export type ConsensusResult = z.infer<typeof ConsensusResultSchema>;
+
+// ============================================================================
+// Shared Quality Rubric Types (for regression gating and receipts)
+// ============================================================================
+export * from './quality-rubric.js';

@@ -21,9 +21,14 @@ program
   .option('--gorchestrator <url>', 'GOrchestrator endpoint', 'http://localhost:3001')
   .option('--gmirror <url>', 'GMirror endpoint', 'http://localhost:3002')
   .option('--gtom <url>', 'GToM endpoint', 'http://localhost:3003')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
-    console.log(chalk.blue.bold('[GLearn] Starting learning cycle'));
-    console.log(chalk.gray(`Counterfactual evaluation: ${options.counterfactual}`));
+    // Basic input validation
+    if (options.gbrain && options.gbrain.length > 500) {
+      console.error(chalk.red('Error: GBrain URL too long (max 500 characters)'));
+      process.exit(1);
+    }
 
     const glearn = new GLearn({
       gbrainEndpoint: options.gbrain,
@@ -38,15 +43,30 @@ program
         run_counterfactual: options.counterfactual,
       });
 
-      console.log(chalk.green.bold('\n[GLearn] Learning cycle completed'));
-      console.log(chalk.gray(`Status: ${result.status}`));
-      console.log(chalk.gray(`Patterns found: ${result.patterns_found}`));
-      console.log(chalk.gray(`Proposals generated: ${result.proposals_generated}`));
-      console.log(chalk.gray(`Evaluations completed: ${result.evaluations_completed}`));
-      console.log(chalk.gray(`Duration: ${result.completed_at ? new Date(result.completed_at).getTime() - new Date(result.started_at).getTime() : 0}ms`));
+      const output = {
+        status: result.status,
+        patterns_found: result.patterns_found,
+        proposals_generated: result.proposals_generated,
+        evaluations_completed: result.evaluations_completed,
+        duration_ms: result.completed_at ? new Date(result.completed_at).getTime() - new Date(result.started_at).getTime() : 0,
+        error_message: result.error_message,
+      };
 
-      if (result.status === 'failed') {
-        console.log(chalk.red(`Error: ${result.error_message}`));
+      if (options.json) {
+        console.log(JSON.stringify(output, null, 2));
+      } else if (!options.quiet) {
+        console.log(chalk.blue.bold('[GLearn] Starting learning cycle'));
+        console.log(chalk.gray(`Counterfactual evaluation: ${options.counterfactual}`));
+        console.log(chalk.green.bold('\n[GLearn] Learning cycle completed'));
+        console.log(chalk.gray(`Status: ${result.status}`));
+        console.log(chalk.gray(`Patterns found: ${result.patterns_found}`));
+        console.log(chalk.gray(`Proposals generated: ${result.proposals_generated}`));
+        console.log(chalk.gray(`Evaluations completed: ${result.evaluations_completed}`));
+        console.log(chalk.gray(`Duration: ${output.duration_ms}ms`));
+
+        if (result.status === 'failed') {
+          console.log(chalk.red(`Error: ${result.error_message}`));
+        }
       }
 
       process.exit(result.status === 'completed' ? 0 : 1);
@@ -62,6 +82,8 @@ program
   .description('List discovered patterns')
   .option('--type <type>', 'Filter by pattern type')
   .option('--tool <tool>', 'Filter by source tool')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     const glearn = new GLearn();
     const patterns = glearn.getPatterns();
@@ -74,11 +96,15 @@ program
       filtered = filtered.filter(p => p.source_tools.includes(options.tool));
     }
 
-    console.log(chalk.bold('Discovered Patterns:'));
-    for (const pattern of filtered) {
-      console.log(`  ${pattern.pattern_type}: ${pattern.description}`);
-      console.log(`    Confidence: ${pattern.confidence.toFixed(3)}`);
-      console.log(`    Source tools: ${pattern.source_tools.join(', ')}`);
+    if (options.json) {
+      console.log(JSON.stringify(filtered, null, 2));
+    } else if (!options.quiet) {
+      console.log(chalk.bold('Discovered Patterns:'));
+      for (const pattern of filtered) {
+        console.log(`  ${pattern.pattern_type}: ${pattern.description}`);
+        console.log(`    Confidence: ${pattern.confidence.toFixed(3)}`);
+        console.log(`    Source tools: ${pattern.source_tools.join(', ')}`);
+      }
     }
 
     process.exit(0);
@@ -88,19 +114,25 @@ program
 program
   .command('proposals')
   .description('List generated proposals')
-  .action(async () => {
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (options) => {
     const glearn = new GLearn();
     const patterns = glearn.getPatterns();
-    const proposals = glearn.getProposals(patterns);
+    const proposals = await glearn.getProposals(patterns);
 
-    console.log(chalk.bold('Generated Proposals:'));
-    for (const proposal of proposals) {
-      console.log(`  ${proposal.proposal_type} for ${proposal.target_tool}:`);
-      console.log(`    Target: ${proposal.target_component}`);
-      console.log(`    Rationale: ${proposal.rationale}`);
-      console.log(`    Expected improvement: ${(proposal.expected_impact.improvement * 100).toFixed(1)}%`);
-      console.log(`    Risk level: ${proposal.risk_assessment.risk_level}`);
-      console.log(`    Status: ${proposal.status}`);
+    if (options.json) {
+      console.log(JSON.stringify(proposals, null, 2));
+    } else if (!options.quiet) {
+      console.log(chalk.bold('Generated Proposals:'));
+      for (const proposal of proposals) {
+        console.log(`  ${proposal.proposal_type} for ${proposal.target_tool}:`);
+        console.log(`    Target: ${proposal.target_component}`);
+        console.log(`    Rationale: ${proposal.rationale}`);
+        console.log(`    Expected improvement: ${(proposal.expected_impact.improvement * 100).toFixed(1)}%`);
+        console.log(`    Risk level: ${proposal.risk_assessment.risk_level}`);
+        console.log(`    Status: ${proposal.status}`);
+      }
     }
 
     process.exit(0);
@@ -112,17 +144,27 @@ program
   .description('Approve a proposal')
   .requiredOption('-p, --proposal-id <id>', 'Proposal ID')
   .option('-r, --reviewer <name>', 'Reviewer name', 'user')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     const glearn = new GLearn();
     const result = glearn.approveProposal(options.proposalId, options.reviewer);
 
-    if (result) {
+    const output = {
+      proposal_id: options.proposalId,
+      reviewer: options.reviewer,
+      status: result ? 'approved' : 'failed',
+    };
+
+    if (options.json) {
+      console.log(JSON.stringify(output, null, 2));
+    } else if (result && !options.quiet) {
       console.log(chalk.green(`[GLearn] Proposal ${options.proposalId} approved by ${options.reviewer}`));
-      process.exit(0);
-    } else {
+    } else if (!result && !options.quiet) {
       console.error(chalk.red(`[GLearn] Failed to approve proposal ${options.proposalId}`));
-      process.exit(1);
     }
+
+    process.exit(result ? 0 : 1);
   });
 
 // Reject proposal
@@ -131,17 +173,27 @@ program
   .description('Reject a proposal')
   .requiredOption('-p, --proposal-id <id>', 'Proposal ID')
   .option('-r, --reviewer <name>', 'Reviewer name', 'user')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     const glearn = new GLearn();
     const result = glearn.rejectProposal(options.proposalId, options.reviewer);
 
-    if (result) {
+    const output = {
+      proposal_id: options.proposalId,
+      reviewer: options.reviewer,
+      status: result ? 'rejected' : 'failed',
+    };
+
+    if (options.json) {
+      console.log(JSON.stringify(output, null, 2));
+    } else if (result && !options.quiet) {
       console.log(chalk.green(`[GLearn] Proposal ${options.proposalId} rejected by ${options.reviewer}`));
-      process.exit(0);
-    } else {
+    } else if (!result && !options.quiet) {
       console.error(chalk.red(`[GLearn] Failed to reject proposal ${options.proposalId}`));
-      process.exit(1);
     }
+
+    process.exit(result ? 0 : 1);
   });
 
 // Health check
@@ -153,6 +205,8 @@ program
   .option('--gorchestrator <url>', 'GOrchestrator endpoint', 'http://localhost:3001')
   .option('--gmirror <url>', 'GMirror endpoint', 'http://localhost:3002')
   .option('--gtom <url>', 'GToM endpoint', 'http://localhost:3003')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     const glearn = new GLearn({
       gbrainEndpoint: options.gbrain,
@@ -164,20 +218,268 @@ program
 
     const health = await glearn.healthCheck();
 
-    console.log(chalk.bold('GLearn Health Check'));
-    console.log(chalk.gray(`Status: ${health.status}`));
-    console.log('');
-    console.log('Components:');
-    console.log(`  Pattern Miner: ${health.components.pattern_miner === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
-    console.log(`  Proposal Generator: ${health.components.proposal_generator === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
-    console.log(`  Counterfactual Evaluator: ${health.components.counterfactual_evaluator === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
-    console.log(`  GBrain: ${health.components.gbrain === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
-    console.log(`  GStack: ${health.components.gstack === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
-    console.log(`  GOrchestrator: ${health.components.gorchestrator === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
-    console.log(`  GMirror: ${health.components.gmirror === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
-    console.log(`  GToM: ${health.components.gtom === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+    if (options.json) {
+      console.log(JSON.stringify(health, null, 2));
+    } else if (!options.quiet) {
+      console.log(chalk.bold('GLearn Health Check'));
+      console.log(chalk.gray(`Status: ${health.status}`));
+      console.log('');
+      console.log('Components:');
+      console.log(`  Pattern Miner: ${health.components.pattern_miner === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  Proposal Generator: ${health.components.proposal_generator === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  Counterfactual Evaluator: ${health.components.counterfactual_evaluator === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  GBrain: ${health.components.gbrain === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  GStack: ${health.components.gstack === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  GOrchestrator: ${health.components.gorchestrator === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  GMirror: ${health.components.gmirror === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  GToM: ${health.components.gtom === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+    }
 
     process.exit(health.status === 'healthy' ? 0 : 1);
+  });
+
+// Eval mode
+program
+  .command('eval')
+  .description('Run evaluation on pattern mining performance')
+  .option('-c, --corpus <path>', 'Path to test corpus JSON')
+  .option('--cycles <number>', 'Number of cycles to run for statistical comparison', '1')
+  .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--gstack <url>', 'GStack endpoint', 'http://localhost:3001')
+  .option('--gorchestrator <url>', 'GOrchestrator endpoint', 'http://localhost:3001')
+  .option('--gmirror <url>', 'GMirror endpoint', 'http://localhost:3002')
+  .option('--gtom <url>', 'GToM endpoint', 'http://localhost:3003')
+  .option('-o, --output <path>', 'Write output to file (JSON format)')
+  .option('--json', 'Output as JSON to stdout')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (options) => {
+    const glearn = new GLearn({
+      gbrainEndpoint: options.gbrain,
+      gstackEndpoint: options.gstack,
+      gorchestratorEndpoint: options.gorchestrator,
+      gmirrorEndpoint: options.gmirror,
+      gtomEndpoint: options.gtom,
+    });
+
+    try {
+      if (!options.corpus) {
+        console.error(chalk.red('[GLearn] --corpus is required'));
+        process.exit(1);
+      }
+
+      const cycles = parseInt(options.cycles);
+      const fs = await import('fs/promises');
+      const corpusContent = await fs.readFile(options.corpus, 'utf-8');
+      const corpus = JSON.parse(corpusContent);
+
+      const allResults = [];
+      for (let cycle = 0; cycle < cycles; cycle++) {
+        if (!options.quiet) {
+          console.log(chalk.gray(`Cycle ${cycle + 1}/${cycles}`));
+        }
+        const result = await glearn.runLearningCycle({
+          run_counterfactual: false,
+        });
+
+        allResults.push({
+          patterns_found: result.patterns_found,
+          proposals_generated: result.proposals_generated,
+          evaluations_completed: result.evaluations_completed,
+          status: result.status,
+          duration_ms: result.completed_at ? new Date(result.completed_at).getTime() - new Date(result.started_at).getTime() : 0,
+        });
+      }
+
+      // Calculate statistical summary
+      const summary = {
+        cycles: cycles,
+        corpus_size: corpus.length,
+        avg_patterns_found: allResults.reduce((sum, r) => sum + r.patterns_found, 0) / allResults.length,
+        avg_proposals_generated: allResults.reduce((sum, r) => sum + r.proposals_generated, 0) / allResults.length,
+        avg_evaluations_completed: allResults.reduce((sum, r) => sum + r.evaluations_completed, 0) / allResults.length,
+        avg_duration_ms: allResults.reduce((sum, r) => sum + r.duration_ms, 0) / allResults.length,
+        std_duration_ms: calculateStdDev(allResults.map(r => r.duration_ms)),
+        results_by_cycle: allResults,
+      };
+
+      if (options.json) {
+        console.log(JSON.stringify(summary, null, 2));
+      } else if (options.output) {
+        await fs.writeFile(options.output, JSON.stringify(summary, null, 2));
+        if (!options.quiet) {
+          console.log(chalk.green(`[GLearn] Results written to ${options.output}`));
+        }
+      } else {
+        if (!options.quiet) {
+          console.log(chalk.blue.bold('[GLearn] Running evaluation'));
+          console.log(chalk.green.bold('\n[GLearn] Evaluation completed'));
+          console.log(chalk.gray(`Cycles: ${summary.cycles}`));
+          console.log(chalk.gray(`Avg patterns found: ${summary.avg_patterns_found.toFixed(2)}`));
+          console.log(chalk.gray(`Avg proposals generated: ${summary.avg_proposals_generated.toFixed(2)}`));
+          console.log(chalk.gray(`Avg evaluations completed: ${summary.avg_evaluations_completed.toFixed(2)}`));
+          console.log(chalk.gray(`Avg duration: ${summary.avg_duration_ms.toFixed(2)}ms (±${summary.std_duration_ms.toFixed(2)}ms)`));
+        }
+      }
+
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GLearn] Evaluation failed:'), error);
+      process.exit(1);
+    }
+  });
+
+function calculateStdDev(values: number[]): number {
+  const mean = values.reduce((sum, v) => sum + v, 0) / values.length;
+  const squaredDiffs = values.map(v => Math.pow(v - mean, 2));
+  const avgSquaredDiff = squaredDiffs.reduce((sum, v) => sum + v, 0) / values.length;
+  return Math.sqrt(avgSquaredDiff);
+}
+
+// Stats command
+program
+  .command('stats')
+  .description('Show statistics from recent learning cycles')
+  .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (options) => {
+    try {
+      const response = await fetch(`${options.gbrain}/api/glearn/stats`);
+      if (!response.ok) {
+        console.error(chalk.red('[GLearn] Failed to fetch statistics'));
+        process.exit(1);
+      }
+
+      const stats = await response.json();
+      
+      if (options.json) {
+        console.log(JSON.stringify(stats, null, 2));
+      } else if (!options.quiet) {
+        console.log(chalk.blue.bold('[GLearn] Fetching statistics'));
+        console.log(chalk.green.bold('\n[GLearn] Statistics'));
+        console.log(chalk.gray(`Total cycles: ${stats.total_cycles || 0}`));
+        console.log(chalk.gray(`Patterns found: ${stats.total_patterns || 0}`));
+        console.log(chalk.gray(`Proposals generated: ${stats.total_proposals || 0}`));
+      }
+
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GLearn] Stats failed:'), error);
+      console.log(chalk.yellow('[GLearn] Stats endpoint not implemented in MVP'));
+      process.exit(0);
+    }
+  });
+
+// Drift command
+program
+  .command('drift')
+  .description('Check for pattern drift over time')
+  .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (options) => {
+    try {
+      const response = await fetch(`${options.gbrain}/api/glearn/drift`);
+      if (!response.ok) {
+        console.error(chalk.red('[GLearn] Failed to check drift'));
+        process.exit(1);
+      }
+
+      const drift = await response.json();
+      
+      if (options.json) {
+        console.log(JSON.stringify(drift, null, 2));
+      } else if (!options.quiet) {
+        console.log(chalk.blue.bold('[GLearn] Checking for pattern drift'));
+        console.log(chalk.green.bold('\n[GLearn] Drift Analysis'));
+        console.log(chalk.gray(`Drift detected: ${drift.drift_detected ? 'Yes' : 'No'}`));
+        console.log(chalk.gray(`Drift magnitude: ${drift.drift_magnitude?.toFixed(3) || 'N/A'}`));
+      }
+
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GLearn] Drift check failed:'), error);
+      console.log(chalk.yellow('[GLearn] Drift endpoint not implemented in MVP'));
+      process.exit(0);
+    }
+  });
+
+// Replay command
+program
+  .command('replay')
+  .description('Replay a previous learning cycle from GBrain')
+  .argument('<cycle-id>', 'Cycle ID to replay')
+  .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (cycleId: string, options) => {
+    const result = {
+      cycle_id: cycleId,
+      status: 'not_implemented',
+      message: 'Replay not implemented in MVP',
+    };
+
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else if (!options.quiet) {
+      console.log(chalk.blue.bold(`[GLearn] Replaying cycle: ${cycleId}`));
+      console.log(chalk.yellow('Replay not implemented in MVP'));
+    }
+    process.exit(0);
+  });
+
+// Regress command
+program
+  .command('regress')
+  .description('Compare current pattern mining performance against baseline')
+  .option('-b, --baseline <path>', 'Path to baseline file')
+  .option('-c, --corpus <path>', 'Path to test corpus JSON')
+  .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--tolerance <number>', 'Tolerance for regression detection', '0.05')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (options) => {
+    const result = {
+      baseline: options.baseline,
+      corpus: options.corpus,
+      tolerance: parseFloat(options.tolerance),
+      status: 'not_implemented',
+      message: 'Regress not implemented in MVP',
+    };
+
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else if (!options.quiet) {
+      console.log(chalk.blue.bold('[GLearn] Running regression test'));
+      console.log(chalk.yellow('Regress not implemented in MVP'));
+    }
+    process.exit(0);
+  });
+
+// Cost command
+program
+  .command('cost')
+  .description('Show cost information')
+  .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--day <date>', 'Show costs for specific day (YYYY-MM-DD)')
+  .option('--week <week>', 'Show costs for specific week (YYYY-Www)')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (options) => {
+    const result = {
+      day: options.day,
+      week: options.week,
+      status: 'not_implemented',
+      message: 'Cost not implemented in MVP',
+    };
+
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else if (!options.quiet) {
+      console.log(chalk.blue.bold('[GLearn] Fetching cost information'));
+      console.log(chalk.yellow('Cost not implemented in MVP'));
+    }
+    process.exit(0);
   });
 
 program.parse();
