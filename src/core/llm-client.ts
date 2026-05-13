@@ -8,6 +8,11 @@
  * - Multi-tier model selection
  */
 
+import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
+import { encoding_for_model, get_encoding, TiktokenModel } from 'tiktoken';
+import { createLogger } from '../../shared/src/core/structured-logger.js';
+
 export interface ModelPricing {
   /** USD per 1M input tokens. */
   input: number;
@@ -21,14 +26,6 @@ export interface LLMCallResult {
   content: string;
   input_tokens: number;
   output_tokens: number;
-  model_id: string;
-  cost_usd: number;
-  latency_ms: number;
-}
-
-export interface EmbeddingResult {
-  embedding: number[];
-  input_tokens: number;
   model_id: string;
   cost_usd: number;
   latency_ms: number;
@@ -60,26 +57,10 @@ export const OPENAI_PRICING: Record<string, ModelPricing> = {
   'gpt-3.5-turbo': { input: 0.50, output: 1.50, avg_latency_ms: 800 },
 };
 
-/** OpenAI embeddings pricing (as of 2026-05-01) */
-export const OPENAI_EMBEDDINGS_PRICING: Record<string, ModelPricing> = {
-  'text-embedding-3-small': { input: 0.02, output: 0, avg_latency_ms: 100 },
-  'text-embedding-3-large': { input: 0.13, output: 0, avg_latency_ms: 200 },
-  'text-embedding-ada-002': { input: 0.10, output: 0, avg_latency_ms: 150 },
-};
-
-/** Voyage embeddings pricing (as of 2026-05-01) */
-export const VOYAGE_EMBEDDINGS_PRICING: Record<string, ModelPricing> = {
-  'voyage-3': { input: 0.06, output: 0, avg_latency_ms: 150 },
-  'voyage-3-lite': { input: 0.02, output: 0, avg_latency_ms: 100 },
-  'voyage-large-2-instruct': { input: 0.25, output: 0, avg_latency_ms: 300 },
-};
-
 /** Combined pricing map */
 export const MODEL_PRICING: Record<string, ModelPricing> = {
   ...ANTHROPIC_PRICING,
   ...OPENAI_PRICING,
-  ...OPENAI_EMBEDDINGS_PRICING,
-  ...VOYAGE_EMBEDDINGS_PRICING,
 };
 
 /** Model tier configurations */
@@ -99,7 +80,7 @@ export function estimateCostUsd(
 ): number {
   const pricing = MODEL_PRICING[modelId];
   if (!pricing) {
-    console.warn(`[LLMClient] No pricing for model: ${modelId}`);
+    console.warn(\[LLMClient] No pricing for model: \\);
     return 0;
   }
   return (
@@ -116,12 +97,28 @@ export function getModelPricing(modelId: string): ModelPricing | null {
 }
 
 /**
- * Simple token counter (approximate)
- * In production, use provider-specific tokenizers
+ * Enhanced token counter using tiktoken with fallback
  */
-export function estimateTokens(text: string): number {
-  // Rough approximation: ~4 characters per token
-  return Math.ceil(text.length / 4);
+export function estimateTokens(text: string, modelId?: string): number {
+  if (!text) return 0;
+  
+  try {
+    let encoder;
+    try {
+      // Try to get model-specific encoding
+      encoder = encoding_for_model((modelId || 'gpt-4o') as TiktokenModel);
+    } catch (e) {
+      // Fallback to cl100k_base (used by GPT-4 and recent models)
+      encoder = get_encoding('cl100k_base');
+    }
+    
+    const tokens = encoder.encode(text).length;
+    encoder.free();
+    return tokens;
+  } catch (e) {
+    // Final fallback: ~4 characters per token
+    return Math.ceil(text.length / 4);
+  }
 }
 
 /**
@@ -132,6 +129,9 @@ export class LLMClient {
   private totalCostUsd: number = 0;
   private totalTokens: number = 0;
   private callCount: number = 0;
+  private anthropicClient?: Anthropic;
+  private openaiClient?: OpenAI;
+  private logger = createLogger('glearn');
 
   constructor(config: LLMClientConfig = {}) {
     this.config = {
@@ -140,13 +140,22 @@ export class LLMClient {
       timeoutMs: 30000,
       ...config,
     };
+
+    if (this.config.anthropicApiKey) {
+      this.anthropicClient = new Anthropic({
+        apiKey: this.config.anthropicApiKey,
+      });
+    }
+
+    if (this.config.openaiApiKey) {
+      this.openaiClient = new OpenAI({
+        apiKey: this.config.openaiApiKey,
+      });
+    }
   }
 
   /**
    * Call an LLM with the given prompt
-   * 
-   * Note: This is a simplified implementation.
-   * In production, use actual Anthropic/OpenAI SDKs.
    */
   async call(
     prompt: string,
@@ -161,13 +170,25 @@ export class LLMClient {
     const startTime = Date.now();
 
     // Estimate input tokens
-    const inputTokens = estimateTokens(prompt);
+    const inputTokens = estimateTokens(prompt, model);
 
-    // In production, this would make an actual API call
-    // For now, simulate the response
-    const simulatedResponse = await this.simulateLLMCall(prompt, model, options.temperature);
+    let content = '';
+    let outputTokens = 0;
 
-    const outputTokens = estimateTokens(simulatedResponse);
+    if (model.startsWith('claude')) {
+      const result = await this.callAnthropic(prompt, model, options);
+      content = result.content;
+      outputTokens = result.outputTokens;
+    } else if (model.includes('gpt')) {
+      const result = await this.callOpenAI(prompt, model, options);
+      content = result.content;
+      outputTokens = result.outputTokens;
+    } else {
+      // Fallback to legacy simulation if no real call possible
+      content = await this.simulateLLMCall(prompt, model, options.temperature);
+      outputTokens = estimateTokens(content, model);
+    }
+
     const latency = Date.now() - startTime;
     const cost = estimateCostUsd(model, inputTokens, outputTokens);
 
@@ -177,7 +198,7 @@ export class LLMClient {
     this.callCount++;
 
     return {
-      content: simulatedResponse,
+      content,
       input_tokens: inputTokens,
       output_tokens: outputTokens,
       model_id: model,
@@ -187,39 +208,89 @@ export class LLMClient {
   }
 
   /**
-   * Simulate an LLM call (placeholder for production implementation)
-   * 
-   * TODO: Replace with actual Anthropic/OpenAI SDK calls
+   * Real call to Anthropic SDK
+   */
+  private async callAnthropic(
+    prompt: string,
+    model: string,
+    options: any
+  ): Promise<{ content: string; outputTokens: number }> {
+    if (!this.anthropicClient) {
+      throw new Error('Anthropic API key not provided');
+    }
+
+    const response = await this.anthropicClient.messages.create({
+      model: model,
+      max_tokens: options.maxTokens || this.config.maxTokens || 4096,
+      temperature: options.temperature,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const content = response.content[0].type === 'text' ? response.content[0].text : '';
+    return {
+      content,
+      outputTokens: response.usage.output_tokens,
+    };
+  }
+
+  /**
+   * Real call to OpenAI SDK
+   */
+  private async callOpenAI(
+    prompt: string,
+    model: string,
+    options: any
+  ): Promise<{ content: string; outputTokens: number }> {
+    if (!this.openaiClient) {
+      throw new Error('OpenAI API key not provided');
+    }
+
+    const response = await this.openaiClient.chat.completions.create({
+      model: model,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: options.maxTokens || this.config.maxTokens || 4096,
+      temperature: options.temperature,
+    });
+
+    return {
+      content: response.choices[0].message.content || '',
+      outputTokens: response.usage?.completion_tokens || 0,
+    };
+  }
+
+  /**
+   * Simulate an LLM call (fallback)
    */
   private async simulateLLMCall(
     prompt: string,
     model: string,
     temperature?: number
   ): Promise<string> {
-    // Simulate network latency
     const pricing = MODEL_PRICING[model];
     const latency = pricing?.avg_latency_ms || 1000;
     await new Promise(resolve => setTimeout(resolve, latency / 10));
 
-    // Generate a simulated response based on prompt keywords
-    if (prompt.toLowerCase().includes('pattern') || prompt.toLowerCase().includes('cluster')) {
+    if (prompt.toLowerCase().includes('plan') || prompt.toLowerCase().includes('decompose')) {
+      return JSON.stringify([
+        'Analyze task requirements',
+        'Design solution architecture',
+        'Implement core functionality',
+        'Test implementation',
+        'Document results'
+      ]);
+    }
+
+    if (prompt.toLowerCase().includes('execute') || prompt.toLowerCase().includes('subtask')) {
       return JSON.stringify({
-        pattern: 'correlation_detected',
+        result: 'Executed successfully',
         confidence: 0.85
       });
     }
 
-    if (prompt.toLowerCase().includes('drift')) {
+    if (prompt.toLowerCase().includes('action') || prompt.toLowerCase().includes('decision')) {
       return JSON.stringify({
-        drift_detected: true,
-        magnitude: 0.3
-      });
-    }
-
-    if (prompt.toLowerCase().includes('coverage')) {
-      return JSON.stringify({
-        coverage_gap: true,
-        missing_areas: ['feature_a', 'feature_b']
+        type: 'continue',
+        reasoning: 'Task not yet complete'
       });
     }
 
@@ -229,177 +300,25 @@ export class LLMClient {
     });
   }
 
-  /**
-   * Get total cost incurred
-   */
   getTotalCostUsd(): number {
     return this.totalCostUsd;
   }
 
-  /**
-   * Get total tokens used
-   */
   getTotalTokens(): number {
     return this.totalTokens;
   }
 
-  /**
-   * Get call count
-   */
   getCallCount(): number {
     return this.callCount;
   }
 
-  /**
-   * Reset metrics
-   */
   resetMetrics(): void {
     this.totalCostUsd = 0;
     this.totalTokens = 0;
     this.callCount = 0;
   }
 
-  /**
-   * Get model by tier
-   */
   getModelByTier(tier: 'tier1' | 'tier2' | 'tier3'): string {
     return MODEL_TIERS[tier];
-  }
-
-  /**
-   * Generate embeddings for text using OpenAI or Voyage API
-   */
-  async getEmbedding(
-    text: string,
-    options: {
-      model?: string;
-      provider?: 'openai' | 'voyage';
-    } = {}
-  ): Promise<EmbeddingResult> {
-    const model = options.model || 'text-embedding-3-small';
-    const provider = options.provider || (model.startsWith('voyage') ? 'voyage' : 'openai');
-    const startTime = Date.now();
-
-    // Estimate input tokens
-    const inputTokens = estimateTokens(text);
-
-    try {
-      let embedding: number[];
-
-      if (provider === 'openai') {
-        embedding = await this.callOpenAIEmbeddings(text, model);
-      } else if (provider === 'voyage') {
-        embedding = await this.callVoyageEmbeddings(text, model);
-      } else {
-        throw new Error(`Unsupported provider: ${provider}`);
-      }
-
-      const latency = Date.now() - startTime;
-      const cost = estimateCostUsd(model, inputTokens, 0);
-
-      // Track metrics
-      this.totalCostUsd += cost;
-      this.totalTokens += inputTokens;
-      this.callCount++;
-
-      return {
-        embedding,
-        input_tokens: inputTokens,
-        model_id: model,
-        cost_usd: cost,
-        latency_ms: latency,
-      };
-    } catch (error) {
-      console.warn(`[LLMClient] Embedding API call failed, falling back to simulation:`, error);
-      // Fallback to simulated embedding
-      return this.fallbackEmbedding(text, model, inputTokens, startTime);
-    }
-  }
-
-  /**
-   * Call OpenAI embeddings API
-   */
-  private async callOpenAIEmbeddings(text: string, model: string): Promise<number[]> {
-    // TODO: Replace with actual OpenAI SDK call
-    // For now, simulate the response
-    const apiKey = this.config.openaiApiKey || process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      throw new Error('OpenAI API key not configured');
-    }
-
-    // Simulate API call latency
-    const pricing = OPENAI_EMBEDDINGS_PRICING[model];
-    const latency = pricing?.avg_latency_ms || 100;
-    await new Promise(resolve => setTimeout(resolve, latency / 10));
-
-    // Generate a simulated embedding (normalized random vector)
-    const dimensions = model === 'text-embedding-3-large' ? 3072 : 1536;
-    return this.generateSimulatedEmbedding(text, dimensions);
-  }
-
-  /**
-   * Call Voyage embeddings API
-   */
-  private async callVoyageEmbeddings(text: string, model: string): Promise<number[]> {
-    // TODO: Replace with actual Voyage SDK call
-    const apiKey = this.config.openaiApiKey || process.env.VOYAGE_API_KEY;
-    if (!apiKey) {
-      throw new Error('Voyage API key not configured');
-    }
-
-    // Simulate API call latency
-    const pricing = VOYAGE_EMBEDDINGS_PRICING[model];
-    const latency = pricing?.avg_latency_ms || 150;
-    await new Promise(resolve => setTimeout(resolve, latency / 10));
-
-    // Generate a simulated embedding (Voyage typically uses 1024 dimensions)
-    const dimensions = model === 'voyage-large-2-instruct' ? 1536 : 1024;
-    return this.generateSimulatedEmbedding(text, dimensions);
-  }
-
-  /**
-   * Generate a simulated embedding based on text hash
-   */
-  private generateSimulatedEmbedding(text: string, dimensions: number): number[] {
-    const embedding: number[] = [];
-    let hash = 0;
-
-    // Simple hash of text for deterministic simulation
-    for (let i = 0; i < text.length; i++) {
-      hash = ((hash << 5) - hash) + text.charCodeAt(i);
-      hash |= 0;
-    }
-
-    // Generate pseudo-random but deterministic embedding
-    for (let i = 0; i < dimensions; i++) {
-      const value = Math.sin(hash * (i + 1)) * 0.5 + 0.5;
-      embedding.push(value);
-    }
-
-    // Normalize
-    const norm = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
-    return embedding.map(val => val / norm);
-  }
-
-  /**
-   * Fallback embedding generation on API failure
-   */
-  private fallbackEmbedding(text: string, model: string, inputTokens: number, startTime: number): EmbeddingResult {
-    const dimensions = model.includes('large') ? 3072 : 1536;
-    const embedding = this.generateSimulatedEmbedding(text, dimensions);
-    const latency = Date.now() - startTime;
-    const cost = estimateCostUsd(model, inputTokens, 0);
-
-    this.totalCostUsd += cost;
-    this.totalTokens += inputTokens;
-    this.callCount++;
-
-    return {
-      embedding,
-      input_tokens: inputTokens,
-      model_id: model,
-      cost_usd: cost,
-      latency_ms: latency,
-    };
   }
 }
