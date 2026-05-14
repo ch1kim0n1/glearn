@@ -7,6 +7,7 @@ import {
   GStackData,
 } from '../types/index.js';
 import { LLMClient } from './llm-client.js';
+import { StructuredLogger } from '../../../shared/src/observability/structured-logger.js';
 
 /**
  * Proposal Generator
@@ -19,9 +20,11 @@ import { LLMClient } from './llm-client.js';
  */
 export class ProposalGenerator {
   private llmClient: LLMClient;
+  private logger: StructuredLogger;
 
   constructor(llmClient?: LLMClient) {
     this.llmClient = llmClient || new LLMClient();
+    this.logger = new StructuredLogger('glearn-proposal-generator');
   }
 
   /**
@@ -351,7 +354,7 @@ export class ProposalGenerator {
    */
   async applyProposal(proposalId: string): Promise<boolean> {
     // In production, would integrate with tool APIs to apply changes
-    console.log(`[ProposalGenerator] Applying proposal: ${proposalId}`);
+    this.logger.info(`Applying proposal: ${proposalId}`);
     return true;
   }
 
@@ -360,7 +363,7 @@ export class ProposalGenerator {
    */
   async rollbackProposal(proposalId: string): Promise<boolean> {
     // In production, would integrate with tool APIs to rollback changes
-    console.log(`[ProposalGenerator] Rolling back proposal: ${proposalId}`);
+    this.logger.info(`Rolling back proposal: ${proposalId}`);
     return true;
   }
 

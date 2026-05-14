@@ -20,7 +20,19 @@ import { PatternMiner } from './pattern-miner.js';
 import { ProposalGenerator } from './proposal-generator.js';
 import { CounterfactualEvaluator } from './counterfactual.js';
 import { ReceiptRegistry } from './receipt-registry.js';
+import { GLearnPersistenceManager } from './glearn-persistence.js';
 import { ExecutionReceipt } from '../types/quality-rubric.js';
+import {
+  GBrainClient,
+  GBrainClientConfig,
+  GBrainClientError,
+} from '../../../shared/src/core/gbrain-client.js';
+import { DriftDetector } from '../../../shared/src/core/drift-detector.js';
+import { CostLedger } from '../../../shared/src/core/cost-ledger.js';
+import { LatencyTracker } from '../../../shared/src/core/latency-tracker.js';
+import { AuditLogger } from '../../../shared/src/core/audit-logger.js';
+import { createPersistenceManager, type PersistenceConfig } from '../../../shared/src/core/persistence-manager.js';
+import { HealthCheckResult } from '../../../shared/src/health/health-checker.js';
 
 /**
  * Main GLearn
@@ -31,6 +43,7 @@ import { ExecutionReceipt } from '../types/quality-rubric.js';
  * - Proposal generation
  * - Counterfactual evaluation
  * - Human-in-loop approval
+ * - Persistent state storage (patterns, proposals, metrics)
  */
 export class GLearn {
   private patternMiner: PatternMiner;
@@ -42,9 +55,24 @@ export class GLearn {
   private gmirrorEndpoint: string;
   private gtomEndpoint: string;
   private receiptRegistry: ReceiptRegistry;
+  private persistenceDb: GLearnPersistenceManager;
   private multiModelConfig: MultiModelConfig;
+  private driftDetector: DriftDetector;
+  private costLedger: CostLedger;
   private tierConfigs: Map<string, TierConfig>;
   private escalationMetrics: EscalationMetrics;
+  private gbrainClient: GBrainClient;
+  private gbrainCircuitOpen: boolean = false;
+  private gbrainCircuitOpenUntil: number = 0;
+  private readonly CIRCUIT_BREAKER_TIMEOUT_MS = 60000;
+  private latencyTracker: LatencyTracker;
+  private auditLogger: AuditLogger;
+  private persistenceManager: ReturnType<typeof createPersistenceManager<{
+    patterns: Pattern[];
+    proposals: Proposal[];
+    escalationMetrics: EscalationMetrics;
+  }>>;
+  private logger: StructuredLogger;
 
   constructor(config: {
     gbrainEndpoint?: string;
@@ -53,17 +81,41 @@ export class GLearn {
     gmirrorEndpoint?: string;
     gtomEndpoint?: string;
     multiModelConfig?: MultiModelConfig;
+    statePath?: string;
   } = {}) {
     this.gbrainEndpoint = config.gbrainEndpoint || 'http://localhost:3000';
     this.gstackEndpoint = config.gstackEndpoint || 'http://localhost:3001';
     this.gorchestratorEndpoint = config.gorchestratorEndpoint || 'http://localhost:3001';
     this.gmirrorEndpoint = config.gmirrorEndpoint || 'http://localhost:3002';
     this.gtomEndpoint = config.gtomEndpoint || 'http://localhost:3003';
+    
+    const gbrainEndpoint = process.env.GBRAIN_ENDPOINT || this.gbrainEndpoint;
+    this.gbrainClient = new GBrainClient({
+      baseUrl: gbrainEndpoint,
+      timeoutMs: 30000,
+      maxRetries: 3,
+    });
 
     this.patternMiner = new PatternMiner();
     this.proposalGenerator = new ProposalGenerator();
     this.counterfactualEvaluator = new CounterfactualEvaluator();
     this.receiptRegistry = new ReceiptRegistry('glearn');
+    this.persistenceDb = new GLearnPersistenceManager();
+    
+    this.driftDetector = new DriftDetector({
+      window_size: 100,
+      drift_threshold: 0.2,
+      alert_threshold: 0.3,
+    });
+    this.costLedger = new CostLedger({
+      budget_usd_per_hour: 10.0,
+      max_reserve_usd: 5.0,
+      auto_commit: false,
+      persistence_enabled: true,
+    });
+    this.latencyTracker = new LatencyTracker(1000);
+    this.auditLogger = new AuditLogger('glearn');
+    this.logger = new StructuredLogger('glearn');
     
     // Multi-model configuration with defaults
     this.multiModelConfig = config.multiModelConfig || {
@@ -76,7 +128,7 @@ export class GLearn {
       },
       consensus_threshold: 0.8,
       cost_budget_usd_per_hour: 10.0,
-      allow_tier3: false,
+      allow_tier3: true,
     };
 
     // Tier configurations
@@ -104,6 +156,34 @@ export class GLearn {
       consensus_agreement_rate: 0,
       budget_remaining_usd: this.multiModelConfig.cost_budget_usd_per_hour,
     };
+    
+    // Initialize persistence for patterns, proposals, and metrics
+    const initialState = {
+      patterns: [],
+      proposals: [],
+      escalationMetrics: this.escalationMetrics,
+    };
+    this.persistenceManager = createPersistenceManager(
+      initialState,
+      'glearn',
+      {
+        statePath: config.statePath,
+        autoSave: true,
+        saveInterval: 60000, // Save every minute
+      }
+    );
+    
+    // Initialize persistence (async, but we don't await in constructor)
+    this.persistenceManager.init().catch(error => {
+      console.error('[GLearn] Failed to initialize persistence:', error);
+    });
+  }
+
+  /**
+   * Get latency metrics
+   */
+  getLatencyMetrics() {
+    return this.latencyTracker.getMetrics();
   }
 
   /**
@@ -115,10 +195,29 @@ export class GLearn {
     priority?: 'normal' | 'high' | 'critical';
   } = {}): Promise<LearningRun> {
     const runId = uuidv4();
+    const start = performance.now();
     const startTime = Date.now();
     let currentTier = this.multiModelConfig.default_tier;
     let escalated = false;
     let tier3Used = false;
+
+    // Check budget before execution
+    if (this.escalationMetrics.budget_remaining_usd < 0) {
+      this.logger.error('Budget exceeded before learning cycle execution', {
+        budget_remaining: this.escalationMetrics.budget_remaining_usd,
+      });
+      return {
+        run_id: runId,
+        run_type: 'pattern_mining',
+        status: 'failed',
+        patterns_found: 0,
+        proposals_generated: 0,
+        evaluations_completed: 0,
+        started_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+        error_message: 'Budget exceeded before execution',
+      };
+    }
 
     const run: LearningRun = {
       run_id: runId,
@@ -132,11 +231,11 @@ export class GLearn {
 
     try {
       // Phase 1: Ingest data from all tools
-      console.log('[GLearn] Phase 1: Ingesting data');
+      this.logger.info('Phase 1: Ingesting data');
       await this.ingestDataFromAllTools(request.time_range);
 
       // Phase 2: Mine patterns with Tier 1
-      console.log('[GLearn] Phase 2: Mining patterns (Tier 1)');
+      this.logger.info('Phase 2: Mining patterns (Tier 1)');
       const patternStartTime = Date.now();
       const patterns = await this.minePatternsWithEscalation();
       const patternDuration = Date.now() - patternStartTime;
@@ -148,7 +247,7 @@ export class GLearn {
       this.escalationMetrics.tier1_avg_latency_ms = patternDuration;
 
       // Phase 3: Generate proposals with escalation based on statistical significance
-      console.log('[GLearn] Phase 3: Generating proposals (with escalation check)');
+      this.logger.info('Phase 3: Generating proposals (with escalation check)');
       const proposalStartTime = Date.now();
       const proposals = await this.generateProposalsWithEscalation(patterns, request.priority);
       const proposalDuration = Date.now() - proposalStartTime;
@@ -168,7 +267,7 @@ export class GLearn {
 
       // Phase 4: Counterfactual evaluation (if requested)
       if (request.run_counterfactual) {
-        console.log('[GLearn] Phase 4: Counterfactual evaluation');
+        this.logger.info('Phase 4: Counterfactual evaluation');
         const baselineMetrics = this.extractBaselineMetrics();
         const evaluations = await this.counterfactualEvaluator.batchEvaluate(
           proposals,
@@ -180,7 +279,7 @@ export class GLearn {
       run.status = 'completed';
       run.completed_at = new Date().toISOString();
 
-      console.log(`[GLearn] Learning cycle complete: ${run.patterns_found} patterns, ${run.proposals_generated} proposals`);
+      this.logger.info(`Learning cycle complete: ${run.patterns_found} patterns, ${run.proposals_generated} proposals`);
 
       // Generate and emit receipt
       const receipt = await this.generateReceipt(request, run);
@@ -188,6 +287,14 @@ export class GLearn {
       
       // Store receipt in gbrain for quality control
       await this.storeReceiptInGBrain(receipt);
+      
+      // Persist patterns and proposals
+      await this.persistenceManager.updateState(state => ({
+        ...state,
+        patterns: this.patternMiner.getPatterns(),
+        proposals: [], // Proposals are generated per-cycle, not persisted long-term
+        escalationMetrics: this.escalationMetrics,
+      }));
     } catch (error) {
       run.status = 'failed';
       run.error_message = error instanceof Error ? error.message : String(error);
@@ -200,8 +307,15 @@ export class GLearn {
       
       // Store receipt in gbrain for quality control
       await this.storeReceiptInGBrain(receipt);
+      
+      // Persist state even on failure
+      await this.persistenceManager.updateState(state => ({
+        ...state,
+        escalationMetrics: this.escalationMetrics,
+      }));
     }
 
+    this.latencyTracker.record(performance.now() - start);
     return run;
   }
 
@@ -210,7 +324,7 @@ export class GLearn {
    */
   private async minePatternsWithEscalation(): Promise<Pattern[]> {
     const tier1Config = this.tierConfigs.get('tier1')!;
-    console.log(`[GLearn] Using Tier 1: ${tier1Config.name} for pattern mining`);
+    this.logger.info(`Using Tier 1: ${tier1Config.name} for pattern mining`);
     
     // Tier 1: Initial pattern mining with fast/cheap model
     const tier1Patterns = await this.patternMiner.minePatterns();
@@ -225,11 +339,11 @@ export class GLearn {
                            avgConfidence < this.multiModelConfig.escalation_triggers.min_confidence;
 
     if (needsEscalation && tier1Patterns.length > 0) {
-      console.log(`[GLearn] Average confidence ${avgConfidence.toFixed(2)} below threshold ${this.multiModelConfig.escalation_triggers.min_confidence}, escalating to Tier 2`);
+      this.logger.info(`Average confidence ${avgConfidence.toFixed(2)} below threshold ${this.multiModelConfig.escalation_triggers.min_confidence}, escalating to Tier 2`);
       
       // Tier 2: Re-mine with higher quality model
       const tier2Config = this.tierConfigs.get('tier2')!;
-      console.log(`[GLearn] Escalating to Tier 2: ${tier2Config.name}`);
+      this.logger.info(`Escalating to Tier 2: ${tier2Config.name}`);
       
       // In a real implementation, this would call a different model
       // For now, we simulate by re-running pattern mining with enhanced parameters
@@ -237,7 +351,7 @@ export class GLearn {
       
       // Apply consensus mechanism to determine final output
       const consensus = this.computeConsensus(tier1Patterns, tier2Patterns);
-      console.log(`[GLearn] Consensus decision: ${consensus.decision}, similarity: ${consensus.similarity_score.toFixed(2)}`);
+      this.logger.info(`Consensus decision: ${consensus.decision}, similarity: ${consensus.similarity_score.toFixed(2)}`);
       
       return consensus.final_output as Pattern[];
     }
@@ -255,8 +369,8 @@ export class GLearn {
     // Calculate statistical significance of patterns
     const statisticalSignificance = this.calculateStatisticalSignificance(patterns);
     
-    console.log(`[GLearn] Statistical significance: ${statisticalSignificance.toFixed(2)}`);
-    console.log(`[GLearn] Priority: ${priority}`);
+    this.logger.info(`Statistical significance: ${statisticalSignificance.toFixed(2)}`);
+    this.logger.info(`Priority: ${priority}`);
 
     let proposals: Proposal[];
     let tier = 'tier1';
@@ -272,9 +386,9 @@ export class GLearn {
                                  needsTier2Escalation && this.checkBudgetForTier3());
 
     if (needsTier3Escalation && patterns.length > 0) {
-      console.log('[GLearn] Critical path detected, escalating to Tier 3 for proposal generation');
+      this.logger.info('Critical path detected, escalating to Tier 3 for proposal generation');
       const tier3Config = this.tierConfigs.get('tier3')!;
-      console.log(`[GLearn] Using Tier 3: ${tier3Config.name}`);
+      this.logger.info(`Using Tier 3: ${tier3Config.name}`);
 
       // Tier 3: Generate proposals with premium model for critical decisions
       proposals = await this.proposalGenerator.generateProposals(patterns);
@@ -283,9 +397,9 @@ export class GLearn {
       proposals = this.enhanceProposalsTier3(proposals);
       tier = 'tier3';
     } else if (needsTier2Escalation && patterns.length > 0) {
-      console.log('[GLearn] Low statistical significance detected, escalating to Tier 2 for proposal generation');
+      this.logger.info('Low statistical significance detected, escalating to Tier 2 for proposal generation');
       const tier2Config = this.tierConfigs.get('tier2')!;
-      console.log(`[GLearn] Using Tier 2: ${tier2Config.name}`);
+      this.logger.info(`Using Tier 2: ${tier2Config.name}`);
 
       // Tier 2: Generate proposals with higher quality model
       proposals = await this.proposalGenerator.generateProposals(patterns);
@@ -639,7 +753,10 @@ export class GLearn {
    * Get proposals
    */
   async getProposals(patterns: Pattern[]): Promise<Proposal[]> {
-    return await this.proposalGenerator.generateProposals(patterns);
+    const start = performance.now();
+    const result = await this.proposalGenerator.generateProposals(patterns);
+    this.latencyTracker.record(performance.now() - start);
+    return result;
   }
 
   /**
@@ -660,14 +777,20 @@ export class GLearn {
    * Apply a proposal
    */
   async applyProposal(proposalId: string): Promise<boolean> {
-    return await this.proposalGenerator.applyProposal(proposalId);
+    const start = performance.now();
+    const result = await this.proposalGenerator.applyProposal(proposalId);
+    this.latencyTracker.record(performance.now() - start);
+    return result;
   }
 
   /**
    * Rollback a proposal
    */
   async rollbackProposal(proposalId: string): Promise<boolean> {
-    return await this.proposalGenerator.rollbackProposal(proposalId);
+    const start = performance.now();
+    const result = await this.proposalGenerator.rollbackProposal(proposalId);
+    this.latencyTracker.record(performance.now() - start);
+    return result;
   }
 
   /**
@@ -755,39 +878,159 @@ export class GLearn {
   /**
    * Health check
    */
-  async healthCheck(): Promise<{
-    status: 'healthy' | 'degraded' | 'unhealthy';
-    components: {
-      pattern_miner: 'ok' | 'error';
-      proposal_generator: 'ok' | 'error';
-      counterfactual_evaluator: 'ok' | 'error';
-      gbrain: 'ok' | 'error';
-      gstack: 'ok' | 'error';
-      gorchestrator: 'ok' | 'error';
-      gmirror: 'ok' | 'error';
-      gtom: 'ok' | 'error';
-    };
-    escalation?: EscalationMetrics;
-  }> {
-    const checks = {
-      pattern_miner: 'ok' as const,
-      proposal_generator: 'ok' as const,
-      counterfactual_evaluator: 'ok' as const,
-      gbrain: await this.checkEndpoint(this.gbrainEndpoint),
-      gstack: await this.checkEndpoint(this.gstackEndpoint),
-      gorchestrator: await this.checkEndpoint(this.gorchestratorEndpoint),
-      gmirror: await this.checkEndpoint(this.gmirrorEndpoint),
-      gtom: await this.checkEndpoint(this.gtomEndpoint),
-    };
+  async healthCheck(): Promise<HealthCheckResult[]> {
+    const start = performance.now();
+    const results: HealthCheckResult[] = [];
+    
+    // Check pattern_miner (internal component)
+    const pmStart = performance.now();
+    results.push({
+      service: 'pattern_miner',
+      healthy: true,
+      latency_ms: performance.now() - pmStart,
+      timestamp: new Date().toISOString(),
+    });
 
-    const errorCount = Object.values(checks).filter(v => v === 'error').length;
-    const status = errorCount === 0 ? 'healthy' : errorCount < 4 ? 'degraded' : 'unhealthy';
+    // Check proposal_generator (internal component)
+    const pgStart = performance.now();
+    results.push({
+      service: 'proposal_generator',
+      healthy: true,
+      latency_ms: performance.now() - pgStart,
+      timestamp: new Date().toISOString(),
+    });
 
-    return { 
-      status, 
-      components: checks,
-      escalation: this.getEscalationMetrics(),
-    };
+    // Check counterfactual_evaluator (internal component)
+    const ceStart = performance.now();
+    results.push({
+      service: 'counterfactual_evaluator',
+      healthy: true,
+      latency_ms: performance.now() - ceStart,
+      timestamp: new Date().toISOString(),
+    });
+
+    // Check gbrain
+    const gbrainStart = performance.now();
+    try {
+      const response = await fetch(`${this.gbrainEndpoint}/health`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(5000),
+      });
+      results.push({
+        service: 'gbrain',
+        healthy: response.ok,
+        latency_ms: performance.now() - gbrainStart,
+        error: response.ok ? undefined : `HTTP ${response.status}`,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      results.push({
+        service: 'gbrain',
+        healthy: false,
+        latency_ms: performance.now() - gbrainStart,
+        error: error instanceof Error ? error.message : 'Unknown error',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Check gstack
+    const gstackStart = performance.now();
+    try {
+      const response = await fetch(`${this.gstackEndpoint}/health`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(5000),
+      });
+      results.push({
+        service: 'gstack',
+        healthy: response.ok,
+        latency_ms: performance.now() - gstackStart,
+        error: response.ok ? undefined : `HTTP ${response.status}`,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      results.push({
+        service: 'gstack',
+        healthy: false,
+        latency_ms: performance.now() - gstackStart,
+        error: error instanceof Error ? error.message : 'Unknown error',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Check gorchestrator
+    const gorchestratorStart = performance.now();
+    try {
+      const response = await fetch(`${this.gorchestratorEndpoint}/health`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(5000),
+      });
+      results.push({
+        service: 'gorchestrator',
+        healthy: response.ok,
+        latency_ms: performance.now() - gorchestratorStart,
+        error: response.ok ? undefined : `HTTP ${response.status}`,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      results.push({
+        service: 'gorchestrator',
+        healthy: false,
+        latency_ms: performance.now() - gorchestratorStart,
+        error: error instanceof Error ? error.message : 'Unknown error',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Check gmirror
+    const gmirrorStart = performance.now();
+    try {
+      const response = await fetch(`${this.gmirrorEndpoint}/health`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(5000),
+      });
+      results.push({
+        service: 'gmirror',
+        healthy: response.ok,
+        latency_ms: performance.now() - gmirrorStart,
+        error: response.ok ? undefined : `HTTP ${response.status}`,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      results.push({
+        service: 'gmirror',
+        healthy: false,
+        latency_ms: performance.now() - gmirrorStart,
+        error: error instanceof Error ? error.message : 'Unknown error',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Check gtom
+    const gtomStart = performance.now();
+    try {
+      const response = await fetch(`${this.gtomEndpoint}/health`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(5000),
+      });
+      results.push({
+        service: 'gtom',
+        healthy: response.ok,
+        latency_ms: performance.now() - gtomStart,
+        error: response.ok ? undefined : `HTTP ${response.status}`,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      results.push({
+        service: 'gtom',
+        healthy: false,
+        latency_ms: performance.now() - gtomStart,
+        error: error instanceof Error ? error.message : 'Unknown error',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    this.latencyTracker.record(performance.now() - start);
+    return results;
   }
 
   private async checkEndpoint(endpoint: string): Promise<'ok' | 'error'> {
@@ -800,6 +1043,63 @@ export class GLearn {
     } catch {
       return 'error';
     }
+  }
+
+  /**
+   * Get receipts
+   */
+  async getReceipts(options?: {
+    limit?: number;
+    offset?: number;
+    startDate?: string;
+    endDate?: string;
+  }): Promise<any[]> {
+    const start = performance.now();
+    let result;
+    if (options?.startDate && options?.endDate) {
+      const startDate = new Date(options.startDate);
+      const end = new Date(options.endDate);
+      const receipts = await this.receiptRegistry.getAllBetween(startDate, end);
+      
+      // Apply limit and offset
+      result = receipts;
+      if (options.offset) {
+        result = result.slice(options.offset);
+      }
+      if (options.limit) {
+        result = result.slice(0, options.limit);
+      }
+    } else {
+      // If no date range, get latest
+      const latest = await this.receiptRegistry.getLatest();
+      result = latest ? [latest] : [];
+    }
+    this.latencyTracker.record(performance.now() - start);
+    return result;
+  }
+
+  /**
+   * Get drift statistics
+   */
+  async getDrift(metricName?: string): Promise<any[]> {
+    const start = performance.now();
+    let result;
+    if (metricName) {
+      const driftResult = this.driftDetector.detectDrift(metricName);
+      result = driftResult ? [driftResult] : [];
+    } else {
+      // If no metric specified, return all available metrics
+      result = this.driftDetector.detectAllDrift();
+    }
+    this.latencyTracker.record(performance.now() - start);
+    return result;
+  }
+
+  /**
+   * Get cost statistics
+   */
+  getCostStats() {
+    return this.costLedger.getStatistics();
   }
 
   /**
@@ -849,33 +1149,65 @@ export class GLearn {
    * Store receipt in gbrain quality control database
    */
   private async storeReceiptInGBrain(receipt: ExecutionReceipt): Promise<void> {
-    try {
-      const { promisify } = require('util');
-      const { exec } = require('child_process');
-      const execAsync = promisify(exec);
-      
-      // Store the receipt
-      await execAsync(
-        `gbrain qc_store_receipt --receipt_id "${receipt.receipt_id}" --component "glearn" --rubric_name "${receipt.rubric_name}" --rubric_hash "${receipt.rubric_sha8}" --timestamp "${receipt.timestamp}" --verdict "${receipt.verdict}" --overall_score ${receipt.overall_score} --hard_gates_passed ${receipt.hard_gates_passed} --scores '${JSON.stringify(receipt.scores)}' --hard_gate_results '[]' --metadata '${JSON.stringify(receipt.metadata)}'`
-      );
-
-      // Store individual rubric scores
-      const scoreEntries = Object.entries(receipt.scores).map(([dimension, scoreData]) => ({
-        dimension_name: dimension,
-        score: scoreData.score,
-        confidence: scoreData.confidence || 0.7,
-        weight: scoreData.weight || 1.0,
-        evidence: []
-      }));
-
-      if (scoreEntries.length > 0) {
-        await execAsync(
-          `gbrain qc_store_rubric_scores --receipt_id "${receipt.receipt_id}" --scores '${JSON.stringify(scoreEntries)}'`
-        );
-      }
-    } catch (error) {
-      // Log error but don't fail the learning cycle if gbrain storage fails
-      console.error('[GLearn] Failed to store receipt in gbrain:', error);
+    if (this.isGbrainCircuitOpen()) {
+      console.warn('[GLearn] GBrain circuit breaker is open, skipping storeReceiptInGBrain');
+      return;
     }
+
+    try {
+      // Store the receipt as a page with structured metadata
+      await this.gbrainClient.restClient.createPage({
+        title: `Receipt: ${receipt.receipt_id}`,
+        content: JSON.stringify(receipt, null, 2),
+        tags: ['glearn', 'receipt', receipt.verdict],
+      });
+      
+      this.resetGbrainCircuit();
+    } catch (error) {
+      if (error instanceof GBrainClientError) {
+        this.handleGbrainError(error);
+        console.error('[GLearn] Failed to store receipt in gbrain:', error);
+      }
+    }
+  }
+
+  /**
+   * Circuit breaker: Check if GBrain circuit is open
+   */
+  private isGbrainCircuitOpen(): boolean {
+    if (this.gbrainCircuitOpen) {
+      if (Date.now() > this.gbrainCircuitOpenUntil) {
+        this.gbrainCircuitOpen = false;
+        return false;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Circuit breaker: Handle GBrain errors
+   */
+  private handleGbrainError(error: GBrainClientError): void {
+    if (!error.retryable) {
+      return;
+    }
+    
+    if (error.kind === 'timeout' || error.kind === 'network' || error.kind === 'server_error') {
+      this.gbrainCircuitOpen = true;
+      this.gbrainCircuitOpenUntil = Date.now() + this.CIRCUIT_BREAKER_TIMEOUT_MS;
+      console.warn('[GLearn] GBrain circuit breaker opened', { 
+        errorKind: error.kind, 
+        openUntil: new Date(this.gbrainCircuitOpenUntil).toISOString() 
+      });
+    }
+  }
+
+  /**
+   * Circuit breaker: Reset circuit on success
+   */
+  private resetGbrainCircuit(): void {
+    this.gbrainCircuitOpen = false;
+    this.gbrainCircuitOpenUntil = 0;
   }
 }

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "glearn.fullname" . }}-config
+  labels:
+    {{- include "glearn.labels" . | nindent 4 }}
+data:
+  pattern-mining-enabled: {{ .Values.config.patternMiningEnabled | quote }}
+  proposal-generation: {{ .Values.config.proposalGeneration | quote }}
+  observation-window: {{ .Values.config.observationWindow | quote }}
+  log-level: {{ .Values.config.logLevel | quote }}

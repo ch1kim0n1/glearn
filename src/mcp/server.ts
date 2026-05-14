@@ -5,6 +5,8 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { GLearn } from '../core/glearn.js';
+import { createAuthMiddleware } from '../../../shared/src/core/token-auth.js';
+import { AuthRateLimiter } from '../../../shared/src/core/auth-rate-limit.js';
 
 /**
  * MCP Server for GLearn
@@ -14,6 +16,8 @@ import { GLearn } from '../core/glearn.js';
 class GLearnMCPServer {
   private server: Server;
   private glearn: GLearn;
+  private authMiddleware: any;
+  private rateLimiter!: AuthRateLimiter;
 
   constructor() {
     this.server = new Server(
@@ -29,6 +33,14 @@ class GLearnMCPServer {
     );
 
     this.glearn = new GLearn();
+
+    // Initialize authentication middleware
+    const authSecret = process.env.GLEARN_AUTH_SECRET || 'dev-secret-key';
+    this.authMiddleware = createAuthMiddleware({
+      secret: authSecret,
+      tool: 'glearn',
+      defaultRoles: ['read', 'write'],
+    });
 
     this.setupHandlers();
   }
@@ -108,6 +120,52 @@ class GLearnMCPServer {
               required: [],
             },
           },
+          {
+            name: 'glearn_get_receipts',
+            description: 'Get execution receipts from the receipt registry',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                limit: {
+                  type: 'number',
+                  description: 'Maximum number of receipts to return',
+                },
+                offset: {
+                  type: 'number',
+                  description: 'Offset for pagination',
+                },
+                startDate: {
+                  type: 'string',
+                  description: 'Start date for filtering (ISO 8601)',
+                },
+                endDate: {
+                  type: 'string',
+                  description: 'End date for filtering (ISO 8601)',
+                },
+              },
+            },
+          },
+          {
+            name: 'glearn_get_drift',
+            description: 'Get drift statistics for metrics',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                metricName: {
+                  type: 'string',
+                  description: 'Specific metric name to check (optional)',
+                },
+              },
+            },
+          },
+          {
+            name: 'glearn_get_cost_stats',
+            description: 'Get cost statistics from the cost ledger',
+            inputSchema: {
+              type: 'object',
+              properties: {},
+            },
+          },
         ],
       };
     });
@@ -115,6 +173,25 @@ class GLearnMCPServer {
     // Handle tool calls
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
+
+      // Authentication check (for MVP, this is a no-op since stdio servers authenticate at process level)
+      // In production with HTTP transport, this would validate the Authorization header
+      const authHeaderRaw = request.params._meta?.authorization;
+      const authHeader = typeof authHeaderRaw === "string" ? authHeaderRaw : "";
+      if (authHeader) {
+        const auth = this.authMiddleware.authenticate(authHeader);
+        if (!auth.success) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Authentication failed: ${auth.error}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      }
 
       try {
         switch (name) {
@@ -128,6 +205,12 @@ class GLearnMCPServer {
             return await this.handleApprove(args as any);
           case 'glearn_health':
             return await this.handleHealth();
+          case 'glearn_get_receipts':
+            return await this.handleGetReceipts(args as any);
+          case 'glearn_get_drift':
+            return await this.handleGetDrift(args as any);
+          case 'glearn_get_cost_stats':
+            return await this.handleGetCostStats();
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -237,6 +320,49 @@ class GLearnMCPServer {
         {
           type: 'text',
           text: JSON.stringify(health, null, 2),
+        },
+      ],
+    };
+  }
+
+  private async handleGetReceipts(args: {
+    limit?: number;
+    offset?: number;
+    startDate?: string;
+    endDate?: string;
+  }) {
+    const receipts = await this.glearn.getReceipts(args);
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(receipts, null, 2),
+        },
+      ],
+    };
+  }
+
+  private async handleGetDrift(args: {
+    metricName?: string;
+  }) {
+    const drift = await this.glearn.getDrift(args.metricName);
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(drift, null, 2),
+        },
+      ],
+    };
+  }
+
+  private async handleGetCostStats() {
+    const stats = this.glearn.getCostStats();
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(stats, null, 2),
         },
       ],
     };

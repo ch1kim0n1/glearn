@@ -147,16 +147,19 @@ export class PatternMiner {
     const textRepresentation = this.dataToText(tool, data);
 
     try {
-      // Use LLM client to generate real embedding
-      const result = await this.llmClient.getEmbedding(textRepresentation, {
-        model: 'text-embedding-3-small',
-        provider: 'openai',
-      });
-
-      return result.embedding;
+      // Use LLM client to generate real embedding (if available)
+      const client = this.llmClient as any;
+      if (typeof client.getEmbedding === 'function') {
+        const result = await client.getEmbedding(textRepresentation, {
+          model: 'text-embedding-3-small',
+          provider: 'openai',
+        });
+        return result.embedding;
+      }
+      // No embedding API available — fall back to manual features
+      return this.generateManualEmbedding(tool, data);
     } catch (error) {
       console.warn(`[PatternMiner] Embedding API call failed for ${tool}, falling back to manual features:`, error);
-      // Fallback to manual feature extraction
       return this.generateManualEmbedding(tool, data);
     }
   }

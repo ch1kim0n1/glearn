@@ -1,0 +1,32 @@
+[Unit]
+Description=GLearn - Pattern mining and proposal service for G-Stack
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=glearn
+Group=glearn
+WorkingDirectory=/opt/glearn
+Environment=NODE_ENV=production
+Environment=HEALTH_PORT=8080
+EnvironmentFile=/etc/glearn/glearn.env
+ExecStart=/usr/bin/node /opt/glearn/dist/serve.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=glearn
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/glearn /var/log/glearn
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

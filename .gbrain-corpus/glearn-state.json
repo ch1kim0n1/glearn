@@ -1,0 +1,41 @@
+{
+  "version": "1.0.0",
+  "timestamp": "2026-05-14T04:53:14.874Z",
+  "state": {
+    "patterns": [
+      {
+        "pattern_id": "d12c4e83-ddc7-4b72-aa5d-234d5d144e0e",
+        "pattern_type": "coverage_gap",
+        "description": "Coverage gap detected with failure rate NaN%",
+        "confidence": 0.6,
+        "evidence": [
+          "Skills used: 0",
+          "Expected: 20+ skills"
+        ],
+        "source_tools": [
+          "GStack"
+        ],
+        "first_observed": "2026-05-14T04:53:14.798Z",
+        "observation_count": 0
+      }
+    ],
+    "proposals": [],
+    "escalationMetrics": {
+      "total_tasks": 1,
+      "escalated_tasks": 0,
+      "tier1_success_rate": 1,
+      "tier2_success_rate": 0,
+      "tier3_success_rate": 0,
+      "tier1_count": 1,
+      "tier2_count": 1,
+      "tier3_count": 0,
+      "avg_cost_per_task_usd": 0,
+      "avg_latency_ms": 0,
+      "tier1_avg_latency_ms": 138,
+      "tier2_avg_latency_ms": 0,
+      "tier3_avg_latency_ms": 0,
+      "consensus_agreement_rate": 1,
+      "budget_remaining_usd": 10
+    }
+  }
+}

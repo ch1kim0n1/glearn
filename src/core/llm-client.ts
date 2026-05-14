@@ -11,7 +11,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { encoding_for_model, get_encoding, TiktokenModel } from 'tiktoken';
-import { createLogger } from '../../shared/src/core/structured-logger.js';
+import { createLogger } from '../../../shared/src/core/structured-logger.js';
 
 export interface ModelPricing {
   /** USD per 1M input tokens. */
@@ -37,6 +37,8 @@ export interface LLMClientConfig {
   defaultModel?: string;
   maxTokens?: number;
   timeoutMs?: number;
+  /** Hook called after each LLM call with cost info (for BudgetLedger integration) */
+  onSpend?: (modelId: string, inputTokens: number, outputTokens: number, costUsd: number) => Promise<void>;
 }
 
 /** Anthropic model pricing (as of 2026-05-01) */
@@ -80,7 +82,7 @@ export function estimateCostUsd(
 ): number {
   const pricing = MODEL_PRICING[modelId];
   if (!pricing) {
-    console.warn(\[LLMClient] No pricing for model: \\);
+    console.warn(`[LLMClient] No pricing for model: ${modelId}`);
     return 0;
   }
   return (
@@ -196,6 +198,11 @@ export class LLMClient {
     this.totalCostUsd += cost;
     this.totalTokens += inputTokens + outputTokens;
     this.callCount++;
+
+    // Call onSpend hook if configured (for BudgetLedger integration)
+    if (this.config.onSpend) {
+      await this.config.onSpend(model, inputTokens, outputTokens, cost);
+    }
 
     return {
       content,

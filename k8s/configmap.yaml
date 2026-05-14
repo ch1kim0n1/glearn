@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: glearn-config
+  labels:
+    app: glearn
+    component: gstack
+data:
+  pattern-mining-enabled: "true"
+  proposal-generation: "true"
+  observation-window: "7d"
+  log-level: "info"
