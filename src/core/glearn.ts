@@ -16,6 +16,7 @@ import {
   MultiModelConfig,
   EscalationMetrics,
   TierConfig,
+  ModelTier,
   ConsensusResult,
 } from '../types/index.js';
 import { PatternMiner } from './pattern-miner.js';
@@ -37,6 +38,41 @@ import { AuditLogger } from '../../../shared/src/core/audit-logger.js';
 import { StructuredLogger } from '../../../shared/src/observability/structured-logger.js';
 import { createPersistenceManager, type PersistenceConfig } from '../../../shared/src/core/persistence-manager.js';
 import { HealthCheckResult } from '../../../shared/src/health/health-checker.js';
+
+interface PatternConsensusVote {
+  tier: ModelTier;
+  model_id: string;
+  output: Pattern[];
+  dimensions: Record<string, number>;
+  disqualified: boolean;
+  disqualification_reason?: string;
+}
+
+interface DimensionAgreement {
+  participating_models: number;
+  agreement: number;
+  wilson_95_ci: { lower: number; upper: number };
+  small_sample_note: boolean;
+  values: Record<string, number>;
+}
+
+interface PatternConsensusSummary {
+  agreed: boolean;
+  decision: 'accept_tier1' | 'accept_tier2' | 'accept_tier3' | 'merge';
+  reason: string;
+  agreement_ratio: number;
+  consensus_threshold: number;
+  votes_required: number;
+  valid_votes: number;
+  tier3_invoked: boolean;
+  early_stopped: boolean;
+  small_sample_note: boolean;
+  per_dimension_agreement: Record<string, DimensionAgreement>;
+  votes: PatternConsensusVote[];
+  final_output_count: number;
+}
+
+const CONSENSUS_DIMENSIONS = ['confidence', 'support', 'evidence', 'coverage'];
 
 /**
  * Main GLearn
@@ -80,6 +116,7 @@ export class GLearn {
   }>>;
   private persistenceInitialized = false;
   private logger: StructuredLogger;
+  private lastConsensusSummary?: PatternConsensusSummary;
 
   constructor(config: {
     gbrainEndpoint?: string;
@@ -372,40 +409,62 @@ export class GLearn {
    * Mine patterns with Tier 1/Tier 2 escalation based on confidence
    */
   private async minePatternsWithEscalation(): Promise<Pattern[]> {
-    const tier1Config = this.tierConfigs.get('tier1')!;
-    this.logger.info(`Using Tier 1: ${tier1Config.name} for pattern mining`);
-    
-    // Tier 1: Initial pattern mining with fast/cheap model
-    const tier1Patterns = await this.patternMiner.minePatterns();
-    
-    // Calculate average confidence
-    const avgConfidence = tier1Patterns.length > 0 
-      ? tier1Patterns.reduce((sum, p) => sum + p.confidence, 0) / tier1Patterns.length 
-      : 0;
+    const votes: PatternConsensusVote[] = [];
+    votes.push(await this.collectPatternVote('tier1'));
 
-    // Check if escalation is needed based on confidence threshold
-    const needsEscalation = this.multiModelConfig.escalation_enabled && 
-                           avgConfidence < this.multiModelConfig.escalation_triggers.min_confidence;
-
-    if (needsEscalation && tier1Patterns.length > 0) {
-      this.logger.info(`Average confidence ${avgConfidence.toFixed(2)} below threshold ${this.multiModelConfig.escalation_triggers.min_confidence}, escalating to Tier 2`);
-      
-      // Tier 2: Re-mine with higher quality model
-      const tier2Config = this.tierConfigs.get('tier2')!;
-      this.logger.info(`Escalating to Tier 2: ${tier2Config.name}`);
-      
-      // In a real implementation, this would call a different model
-      // For now, we simulate by re-running pattern mining with enhanced parameters
-      const tier2Patterns = await this.patternMiner.minePatterns();
-      
-      // Apply consensus mechanism to determine final output
-      const consensus = this.computeConsensus(tier1Patterns, tier2Patterns);
-      this.logger.info(`Consensus decision: ${consensus.decision}, similarity: ${consensus.similarity_score.toFixed(2)}`);
-      
-      return consensus.final_output as Pattern[];
+    if (!this.multiModelConfig.escalation_enabled) {
+      const summary = this.evaluatePatternConsensus(votes, false, false);
+      this.lastConsensusSummary = summary;
+      return votes[0].output;
     }
 
-    return tier1Patterns;
+    votes.push(await this.collectPatternVote('tier2'));
+    let consensus = this.evaluatePatternConsensus(votes, false, false);
+
+    if (consensus.agreed) {
+      consensus = this.evaluatePatternConsensus(votes, false, true);
+      this.lastConsensusSummary = consensus;
+      this.escalationMetrics.consensus_agreement_rate = consensus.agreement_ratio;
+      this.logger.info(`Consensus early-stop: ${consensus.reason}`);
+      return this.resolveConsensusOutput(votes, consensus);
+    }
+
+    if (this.multiModelConfig.allow_tier3 && this.checkBudgetForTier3()) {
+      this.logger.info('Tier 1/Tier 2 consensus failed, invoking Tier 3 for pattern consensus');
+      votes.push(await this.collectPatternVote('tier3'));
+    }
+
+    consensus = this.evaluatePatternConsensus(votes, votes.length === 3, false);
+    this.lastConsensusSummary = consensus;
+    this.escalationMetrics.consensus_agreement_rate = consensus.agreement_ratio;
+    this.logger.info(`Consensus decision: ${consensus.decision}, agreement: ${consensus.agreement_ratio.toFixed(2)}`);
+
+    return this.resolveConsensusOutput(votes, consensus);
+  }
+
+  private async collectPatternVote(tier: ModelTier): Promise<PatternConsensusVote> {
+    const tierConfig = this.tierConfigs.get(tier)!;
+    this.logger.info(`Using ${tier}: ${tierConfig.name} for pattern mining`);
+
+    try {
+      const output = await this.patternMiner.minePatterns();
+      return {
+        tier,
+        model_id: this.llmClient.getModelByTier(tier),
+        output,
+        dimensions: this.calculatePatternDimensions(output),
+        disqualified: false,
+      };
+    } catch (error) {
+      return {
+        tier,
+        model_id: this.llmClient.getModelByTier(tier),
+        output: [],
+        dimensions: {},
+        disqualified: true,
+        disqualification_reason: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   /**
@@ -552,6 +611,173 @@ export class GLearn {
   /**
    * Compute consensus between Tier 1 and Tier 2 outputs
    */
+  private evaluatePatternConsensus(
+    votes: PatternConsensusVote[],
+    tier3Invoked: boolean,
+    earlyStopped: boolean,
+  ): PatternConsensusSummary {
+    const validVotes = votes.filter(vote => this.isValidPatternVote(vote));
+    const threshold = this.multiModelConfig.consensus_threshold;
+    const votesRequired = validVotes.length >= 3 ? 2 : 2;
+
+    let bestVote: PatternConsensusVote | undefined;
+    let bestAgreementCount = 0;
+
+    for (const vote of validVotes) {
+      const agreementCount = validVotes.filter(other =>
+        other === vote || this.calculateSimilarityScore(vote.output, other.output) >= threshold
+      ).length;
+
+      if (agreementCount > bestAgreementCount) {
+        bestAgreementCount = agreementCount;
+        bestVote = vote;
+      }
+    }
+
+    const agreementRatio = validVotes.length > 0 ? bestAgreementCount / validVotes.length : 0;
+    const agreed = bestAgreementCount >= votesRequired && bestVote !== undefined;
+    const decision = agreed && bestVote
+      ? (`accept_${bestVote.tier}` as PatternConsensusSummary['decision'])
+      : 'merge';
+    const reason = agreed && bestVote
+      ? `${bestAgreementCount} of ${validVotes.length} valid model votes agreed at threshold ${threshold.toFixed(2)}`
+      : `No two valid model votes reached consensus threshold ${threshold.toFixed(2)}; merged outputs`;
+    const finalOutput = agreed && bestVote
+      ? bestVote.output
+      : validVotes.reduce<Pattern[]>((merged, vote) => this.mergeOutputs(merged, vote.output), []);
+
+    return {
+      agreed,
+      decision,
+      reason,
+      agreement_ratio: agreementRatio,
+      consensus_threshold: threshold,
+      votes_required: votesRequired,
+      valid_votes: validVotes.length,
+      tier3_invoked: tier3Invoked,
+      early_stopped: earlyStopped,
+      small_sample_note: this.countPatterns(validVotes) < 30,
+      per_dimension_agreement: this.calculateDimensionAgreement(validVotes),
+      votes,
+      final_output_count: finalOutput.length,
+    };
+  }
+
+  private resolveConsensusOutput(
+    votes: PatternConsensusVote[],
+    consensus: Pick<PatternConsensusSummary, 'agreed' | 'decision'>,
+  ): Pattern[] {
+    const validVotes = votes.filter(vote => this.isValidPatternVote(vote));
+    if (consensus.agreed) {
+      const acceptedTier = consensus.decision.replace('accept_', '') as ModelTier;
+      const acceptedVote = validVotes.find(vote => vote.tier === acceptedTier);
+      if (acceptedVote) {
+        return acceptedVote.output;
+      }
+    }
+
+    return validVotes.reduce<Pattern[]>((merged, vote) => this.mergeOutputs(merged, vote.output), []);
+  }
+
+  private isValidPatternVote(vote: PatternConsensusVote): boolean {
+    if (vote.disqualified) {
+      return false;
+    }
+
+    const missingDimensions = CONSENSUS_DIMENSIONS.filter(dimension => vote.dimensions[dimension] === undefined);
+    if (missingDimensions.length > 0) {
+      vote.disqualified = true;
+      vote.disqualification_reason = `missing dimensions: ${missingDimensions.join(', ')}`;
+      return false;
+    }
+
+    return true;
+  }
+
+  private calculatePatternDimensions(patterns: Pattern[]): Record<string, number> {
+    const avgConfidence = patterns.length > 0
+      ? patterns.reduce((sum, pattern) => sum + pattern.confidence, 0) / patterns.length
+      : 0;
+    const totalObservations = patterns.reduce((sum, pattern) => sum + pattern.observation_count, 0);
+    const totalEvidence = patterns.reduce((sum, pattern) => sum + pattern.evidence.length, 0);
+    const sourceTools = new Set(patterns.flatMap(pattern => pattern.source_tools));
+
+    return {
+      confidence: this.clamp01(avgConfidence),
+      support: this.clamp01(totalObservations / Math.max(30, patterns.length * 30)),
+      evidence: this.clamp01(totalEvidence / Math.max(3, patterns.length * 3)),
+      coverage: this.clamp01(sourceTools.size / 5),
+    };
+  }
+
+  private calculateDimensionAgreement(votes: PatternConsensusVote[]): Record<string, DimensionAgreement> {
+    const agreements: Record<string, DimensionAgreement> = {};
+    const tolerance = 1 - this.multiModelConfig.consensus_threshold;
+
+    for (const dimension of CONSENSUS_DIMENSIONS) {
+      const values: number[] = [];
+      const valuesByModel: Record<string, number> = {};
+
+      for (const vote of votes) {
+        const value = vote.dimensions[dimension];
+        if (value !== undefined) {
+          values.push(value);
+          valuesByModel[vote.model_id] = value;
+        }
+      }
+
+      if (values.length === 0) {
+        agreements[dimension] = {
+          participating_models: 0,
+          agreement: 0,
+          wilson_95_ci: this.wilson95(0, 0),
+          small_sample_note: true,
+          values: valuesByModel,
+        };
+        continue;
+      }
+
+      const sorted = [...values].sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)];
+      const agreeing = values.filter(value => Math.abs(value - median) <= tolerance).length;
+      agreements[dimension] = {
+        participating_models: values.length,
+        agreement: agreeing / values.length,
+        wilson_95_ci: this.wilson95(agreeing, values.length),
+        small_sample_note: values.length < 30,
+        values: valuesByModel,
+      };
+    }
+
+    return agreements;
+  }
+
+  private countPatterns(votes: PatternConsensusVote[]): number {
+    return votes.reduce((sum, vote) => sum + vote.output.length, 0);
+  }
+
+  private wilson95(successes: number, total: number): { lower: number; upper: number } {
+    if (total <= 0) {
+      return { lower: 0, upper: 0 };
+    }
+
+    const z = 1.96;
+    const phat = successes / total;
+    const denominator = 1 + (z * z) / total;
+    const center = phat + (z * z) / (2 * total);
+    const margin = z * Math.sqrt((phat * (1 - phat) + (z * z) / (4 * total)) / total);
+
+    return {
+      lower: this.clamp01((center - margin) / denominator),
+      upper: this.clamp01((center + margin) / denominator),
+    };
+  }
+
+  private clamp01(value: number): number {
+    if (!Number.isFinite(value)) return 0;
+    return Math.min(1, Math.max(0, value));
+  }
+
   private computeConsensus(tier1Output: Pattern[], tier2Output: Pattern[]): ConsensusResult {
     const similarityScore = this.calculateSimilarityScore(tier1Output, tier2Output);
     const consensusThreshold = this.multiModelConfig.consensus_threshold;
@@ -1164,6 +1390,12 @@ export class GLearn {
     
     const passed = run.status === 'completed';
     const overallScore = passed ? Math.min(1, run.patterns_found / 10 + run.proposals_generated / 5) : 0;
+    const consensusModels = this.lastConsensusSummary?.votes.map(vote => vote.model_id) || [];
+    const modelList = consensusModels.length > 0 ? Array.from(new Set(consensusModels)) : ['claude-sonnet-4-6'];
+    const validVotes = this.lastConsensusSummary?.valid_votes || 0;
+    const agreeingVotes = Math.round((this.lastConsensusSummary?.agreement_ratio || 0) * validVotes);
+    const verdictInterval = this.wilson95(agreeingVotes, validVotes);
+    const consensusConfidence = this.lastConsensusSummary?.agreement_ratio ?? 0.6;
 
     return {
       receipt_id: uuidv4(),
@@ -1173,12 +1405,12 @@ export class GLearn {
       rubric_name: 'glearn_v1',
       rubric_sha8: inputHash.substring(0, 8),
       input_hash: inputHash,
-      models_used: ['claude-sonnet-4-6'],
+      models_used: modelList,
       config_hash: configHash,
       verdict: passed ? 'pass' : 'fail',
       scores: {
-        pattern_quality: { score: overallScore, confidence: 0.6, weight: 0.5 },
-        proposal_relevance: { score: overallScore, confidence: 0.6, weight: 0.5 },
+        pattern_quality: { score: overallScore, confidence: consensusConfidence, weight: 0.5 },
+        proposal_relevance: { score: overallScore, confidence: consensusConfidence, weight: 0.5 },
       },
       overall_score: overallScore,
       hard_gates_passed: passed,
@@ -1191,6 +1423,9 @@ export class GLearn {
         proposals_generated: run.proposals_generated,
         evaluations_completed: run.evaluations_completed,
         run_counterfactual: request.run_counterfactual,
+        consensus: this.lastConsensusSummary,
+        verdict_wilson_95_ci: verdictInterval,
+        small_sample_note: (run.patterns_found + run.proposals_generated + run.evaluations_completed) < 30,
         llm_total_cost_usd: this.llmClient.getTotalCostUsd(),
         budget_status: this.costLedger.getStatus(),
       },
