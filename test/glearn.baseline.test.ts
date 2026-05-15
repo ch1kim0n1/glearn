@@ -1,6 +1,7 @@
 import { GLearn } from '../src/core/glearn.js';
 import { ReceiptRegistry } from '../src/core/receipt-registry.js';
 import { GLEARN_RUBRIC_V1 } from '../src/core/glearn-rubric.js';
+import { evaluateRegressionGates, loadRegressionBaselines } from '../src/core/regression-gates.js';
 
 describe('GLearn Baseline Regression Tests', () => {
   let glearn: GLearn;
@@ -52,13 +53,15 @@ describe('GLearn Baseline Regression Tests', () => {
     await new Promise(resolve => setTimeout(resolve, 100));
 
     const latest = await registry.getLatest();
-    const currentScore = latest?.overall_score ?? 0;
+    expect(latest).toBeDefined();
 
-    // Baseline locked from initial calibration run (empirically captured).
-    // Future drift > TOLERANCE fails the gate.
-    const baselineOverallScore = 0.3;
-    const diff = Math.abs(currentScore - baselineOverallScore);
-    expect(diff).toBeLessThanOrEqual(TOLERANCE);
+    const baselines = await loadRegressionBaselines('test/baselines/regression-baselines.jsonl');
+    const gate = evaluateRegressionGates(latest!, baselines);
+    const scoreGate = gate.results.find(result => result.dimension === 'overall_score');
+    expect(scoreGate).toBeDefined();
+    expect(scoreGate?.tolerance).toBe(TOLERANCE);
+    expect(scoreGate?.wilson_95_ci).toBeDefined();
+    expect(gate.passed).toBe(true);
   });
 
   it('receipt is persisted to registry', async () => {

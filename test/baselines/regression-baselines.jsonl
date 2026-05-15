@@ -1,0 +1,6 @@
+{"dimension":"overall_score","baseline":0.3,"tolerance":0.05,"direction":"min","min_samples":1}
+{"dimension":"patterns_found","baseline":0,"tolerance":0,"direction":"min","min_samples":1}
+{"dimension":"proposals_generated","baseline":0,"tolerance":0,"direction":"min","min_samples":1}
+{"dimension":"cost_usd","baseline":0.05,"tolerance":1,"direction":"max","min_samples":1}
+{"dimension":"latency_ms","baseline":5000,"tolerance":1,"direction":"max","min_samples":1}
+{"dimension":"escalation_rate","baseline":0,"tolerance":0,"direction":"max","min_samples":1}
