@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { Pattern, Proposal } from '../types/index.js';
+import { coreLogger } from './observability.js';
 
 export interface StoredLlmCall {
   id?: string;
@@ -90,7 +91,10 @@ export class GLearnPersistenceManager {
         continue;
       }
 
-      console.log(`[GLearnPersistenceManager] Running migration ${migration.version}: ${migration.name}`);
+      coreLogger.info('Running GLearn persistence migration', {
+        version: migration.version,
+        name: migration.name,
+      });
       this.db.transaction(() => {
         this.executeStatements(migration.sql);
         this.db.prepare('INSERT OR REPLACE INTO migrations (version, name, applied_at) VALUES (?, ?, ?)').run(

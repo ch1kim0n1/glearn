@@ -36,10 +36,9 @@ import {
 import { DriftDetector, DriftResult } from '../../../shared/src/core/drift-detector.js';
 import { deriveReceiptVerdictFromDrift } from './drift-analysis.js';
 import { LatencyTracker } from '../../../shared/src/core/latency-tracker.js';
-import { AuditLogger } from '../../../shared/src/core/audit-logger.js';
-import { StructuredLogger } from '../../../shared/src/observability/structured-logger.js';
 import { createPersistenceManager, type PersistenceConfig } from '../../../shared/src/core/persistence-manager.js';
 import { HealthCheckResult } from '../../../shared/src/health/health-checker.js';
+import { GLearnObservability, LocalAuditLogger, LocalLogger } from './observability.js';
 
 interface PatternConsensusVote {
   tier: ModelTier;
@@ -110,14 +109,15 @@ export class GLearn {
   private gbrainCircuitOpenUntil: number = 0;
   private readonly CIRCUIT_BREAKER_TIMEOUT_MS = 60000;
   private latencyTracker: LatencyTracker;
-  private auditLogger: AuditLogger;
+  private auditLogger: LocalAuditLogger;
   private persistenceManager: ReturnType<typeof createPersistenceManager<{
     patterns: Pattern[];
     proposals: Proposal[];
     escalationMetrics: EscalationMetrics;
   }>>;
   private persistenceInitialized = false;
-  private logger: StructuredLogger;
+  private logger: LocalLogger;
+  private observability: GLearnObservability;
   private lastConsensusSummary?: PatternConsensusSummary;
 
   constructor(config: {
@@ -151,8 +151,9 @@ export class GLearn {
       alert_threshold: 0.3,
     });
     this.latencyTracker = new LatencyTracker(1000);
-    this.auditLogger = new AuditLogger('glearn');
-    this.logger = new StructuredLogger('glearn');
+    this.observability = new GLearnObservability('glearn');
+    this.auditLogger = this.observability.audit;
+    this.logger = this.observability.logger;
     
     // Multi-model configuration with defaults
     this.multiModelConfig = config.multiModelConfig || {
@@ -183,7 +184,9 @@ export class GLearn {
       },
     }, 'glearn');
     this.costLedgerReady = this.costLedger.init().catch(error => {
-      console.warn('[GLearn] Budget ledger initialization failed:', error);
+      this.logger.warn('Budget ledger initialization failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
     this.llmClient = new LLMClient({
       metricsPersistencePath: path.join(os.homedir(), '.glearn', 'audit', 'llm-metrics.json'),
@@ -256,6 +259,31 @@ export class GLearn {
     return this.latencyTracker.getMetrics();
   }
 
+  exportPrometheusMetrics(): string {
+    return this.observability.metrics.prometheus();
+  }
+
+  exportOpenTelemetryMetrics(): Record<string, unknown> {
+    return this.observability.metrics.openTelemetry();
+  }
+
+  getObservabilitySnapshot(): Record<string, unknown> {
+    return this.observability.snapshot();
+  }
+
+  logShellJob(entry: {
+    command: string;
+    cwd?: string;
+    exit_code?: number;
+    duration_ms?: number;
+    correlation_id?: string;
+    trace_id?: string;
+    metadata?: Record<string, unknown>;
+    error?: string;
+  }): void {
+    this.auditLogger.logShellJob(entry);
+  }
+
   private async recordLLMSpend(
     modelId: string,
     inputTokens: number,
@@ -317,6 +345,11 @@ export class GLearn {
   } = {}): Promise<LearningRun> {
     const runId = uuidv4();
     const start = performance.now();
+    const span = this.observability.tracer.startSpan('GLearn.runLearningCycle', {
+      run_id: runId,
+      priority: request.priority || 'normal',
+      run_counterfactual: request.run_counterfactual || false,
+    });
     const startTime = Date.now();
     const runStartCostUsd = this.llmClient.getTotalCostUsd();
     let currentTier = this.multiModelConfig.default_tier;
@@ -325,7 +358,22 @@ export class GLearn {
 
     // Check budget before execution
     if (this.escalationMetrics.budget_remaining_usd < 0) {
-      this.logger.error('Budget exceeded before learning cycle execution', undefined, {
+      const latencyMs = performance.now() - start;
+      this.observability.metrics.recordPublicMethod('runLearningCycle', latencyMs, 'error');
+      this.auditLogger.logDecision({
+        operation: 'runLearningCycle',
+        decision: 'budget_exceeded',
+        correlation_id: runId,
+        trace_id: span.trace_id,
+        success: false,
+        latency_ms: latencyMs,
+        error: 'Budget exceeded before execution',
+        metadata: {
+          budget_remaining: this.escalationMetrics.budget_remaining_usd,
+        },
+      });
+      this.observability.tracer.endSpan(span, new Error('Budget exceeded before execution'));
+      this.logger.error('Budget exceeded before learning cycle execution', {
         budget_remaining: this.escalationMetrics.budget_remaining_usd,
       });
       return {
@@ -424,11 +472,29 @@ export class GLearn {
         this.persistenceDb.replaceDataStore(Array.from(this.patternMiner.getDataStore().entries()));
         this.persistenceDb.saveEscalationMetrics(this.escalationMetrics);
       });
+
+      const latencyMs = performance.now() - start;
+      this.observability.metrics.recordPublicMethod('runLearningCycle', latencyMs, 'ok');
+      this.auditLogger.logDecision({
+        operation: 'runLearningCycle',
+        decision: run.status,
+        correlation_id: run.run_id,
+        trace_id: span.trace_id,
+        success: true,
+        latency_ms: latencyMs,
+        cost_usd: this.llmClient.getTotalCostUsd() - runStartCostUsd,
+        metadata: {
+          patterns_found: run.patterns_found,
+          proposals_generated: run.proposals_generated,
+          evaluations_completed: run.evaluations_completed,
+        },
+      });
+      this.observability.tracer.endSpan(span);
     } catch (error) {
       run.status = 'failed';
       run.error_message = error instanceof Error ? error.message : String(error);
       run.completed_at = new Date().toISOString();
-      console.error('[GLearn] Learning cycle failed:', error);
+      this.logger.error('Learning cycle failed', error instanceof Error ? error : { error: String(error) });
 
       // Generate and emit receipt even on failure
       const receipt = await this.generateReceipt(request, run, this.llmClient.getTotalCostUsd() - runStartCostUsd);
@@ -444,6 +510,20 @@ export class GLearn {
         escalationMetrics: this.escalationMetrics,
       }));
       this.persistenceDb.saveEscalationMetrics(this.escalationMetrics);
+
+      const latencyMs = performance.now() - start;
+      this.observability.metrics.recordPublicMethod('runLearningCycle', latencyMs, 'error');
+      this.auditLogger.logDecision({
+        operation: 'runLearningCycle',
+        decision: 'failed',
+        correlation_id: run.run_id,
+        trace_id: span.trace_id,
+        success: false,
+        latency_ms: latencyMs,
+        cost_usd: this.llmClient.getTotalCostUsd() - runStartCostUsd,
+        error: run.error_message,
+      });
+      this.observability.tracer.endSpan(span, error instanceof Error ? error : new Error(String(error)));
     }
 
     this.latencyTracker.record(performance.now() - start);
@@ -935,7 +1015,7 @@ export class GLearn {
       const gbrainData = await this.fetchGBrainData(timeRange);
       this.patternMiner.ingestData('GBrain', gbrainData);
     } catch (error) {
-      console.warn('[GLearn] Failed to ingest GBrain data:', error);
+      this.logger.warn('Failed to ingest GBrain data', { error: error instanceof Error ? error.message : String(error) });
     }
 
     // Ingest from GStack
@@ -943,7 +1023,7 @@ export class GLearn {
       const gstackData = await this.fetchGStackData(timeRange);
       this.patternMiner.ingestData('GStack', gstackData);
     } catch (error) {
-      console.warn('[GLearn] Failed to ingest GStack data:', error);
+      this.logger.warn('Failed to ingest GStack data', { error: error instanceof Error ? error.message : String(error) });
     }
 
     // Ingest from GOrchestrator
@@ -951,7 +1031,7 @@ export class GLearn {
       const orchData = await this.fetchGOrchestratorData(timeRange);
       this.patternMiner.ingestData('GOrchestrator', orchData);
     } catch (error) {
-      console.warn('[GLearn] Failed to ingest GOrchestrator data:', error);
+      this.logger.warn('Failed to ingest GOrchestrator data', { error: error instanceof Error ? error.message : String(error) });
     }
 
     // Ingest from GMirror
@@ -959,7 +1039,7 @@ export class GLearn {
       const mirrorData = await this.fetchGMirrorData(timeRange);
       this.patternMiner.ingestData('GMirror', mirrorData);
     } catch (error) {
-      console.warn('[GLearn] Failed to ingest GMirror data:', error);
+      this.logger.warn('Failed to ingest GMirror data', { error: error instanceof Error ? error.message : String(error) });
     }
 
     // Ingest from GToM
@@ -967,7 +1047,7 @@ export class GLearn {
       const gtomData = await this.fetchGToMData(timeRange);
       this.patternMiner.ingestData('GToM', gtomData);
     } catch (error) {
-      console.warn('[GLearn] Failed to ingest GToM data:', error);
+      this.logger.warn('Failed to ingest GToM data', { error: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -1066,7 +1146,15 @@ export class GLearn {
    * Get patterns
    */
   getPatterns(): Pattern[] {
-    return this.patternMiner.getPatterns();
+    const start = performance.now();
+    try {
+      const result = this.patternMiner.getPatterns();
+      this.observability.metrics.recordPublicMethod('getPatterns', performance.now() - start, 'ok');
+      return result;
+    } catch (error) {
+      this.observability.metrics.recordPublicMethod('getPatterns', performance.now() - start, 'error');
+      throw error;
+    }
   }
 
   /**
@@ -1074,23 +1162,59 @@ export class GLearn {
    */
   async getProposals(patterns: Pattern[]): Promise<Proposal[]> {
     const start = performance.now();
-    const result = await this.proposalGenerator.generateProposals(patterns);
-    this.latencyTracker.record(performance.now() - start);
-    return result;
+    const span = this.observability.tracer.startSpan('GLearn.getProposals', { pattern_count: patterns.length });
+    try {
+      const result = await this.proposalGenerator.generateProposals(patterns);
+      const latencyMs = performance.now() - start;
+      this.latencyTracker.record(latencyMs);
+      this.observability.metrics.recordPublicMethod('getProposals', latencyMs, 'ok');
+      this.observability.tracer.endSpan(span);
+      return result;
+    } catch (error) {
+      const latencyMs = performance.now() - start;
+      this.latencyTracker.record(latencyMs);
+      this.observability.metrics.recordPublicMethod('getProposals', latencyMs, 'error');
+      this.observability.tracer.endSpan(span, error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
   }
 
   /**
    * Approve a proposal
    */
   approveProposal(proposalId: string, reviewer: string): Proposal | null {
-    return this.proposalGenerator.approveProposal(proposalId, reviewer);
+    const start = performance.now();
+    const result = this.proposalGenerator.approveProposal(proposalId, reviewer);
+    const latencyMs = performance.now() - start;
+    this.observability.metrics.recordPublicMethod('approveProposal', latencyMs, result ? 'ok' : 'error');
+    this.auditLogger.logDecision({
+      operation: 'approveProposal',
+      decision: result ? 'approved' : 'not_found',
+      correlation_id: proposalId,
+      success: Boolean(result),
+      latency_ms: latencyMs,
+      metadata: { reviewer },
+    });
+    return result;
   }
 
   /**
    * Reject a proposal
    */
   rejectProposal(proposalId: string, reviewer: string): Proposal | null {
-    return this.proposalGenerator.rejectProposal(proposalId, reviewer);
+    const start = performance.now();
+    const result = this.proposalGenerator.rejectProposal(proposalId, reviewer);
+    const latencyMs = performance.now() - start;
+    this.observability.metrics.recordPublicMethod('rejectProposal', latencyMs, result ? 'ok' : 'error');
+    this.auditLogger.logDecision({
+      operation: 'rejectProposal',
+      decision: result ? 'rejected' : 'not_found',
+      correlation_id: proposalId,
+      success: Boolean(result),
+      latency_ms: latencyMs,
+      metadata: { reviewer },
+    });
+    return result;
   }
 
   /**
@@ -1098,9 +1222,38 @@ export class GLearn {
    */
   async applyProposal(proposalId: string): Promise<boolean> {
     const start = performance.now();
-    const result = await this.proposalGenerator.applyProposal(proposalId);
-    this.latencyTracker.record(performance.now() - start);
-    return result;
+    const span = this.observability.tracer.startSpan('GLearn.applyProposal', { proposal_id: proposalId });
+    try {
+      const result = await this.proposalGenerator.applyProposal(proposalId);
+      const latencyMs = performance.now() - start;
+      this.latencyTracker.record(latencyMs);
+      this.observability.metrics.recordPublicMethod('applyProposal', latencyMs, result ? 'ok' : 'error');
+      this.auditLogger.logDecision({
+        operation: 'applyProposal',
+        decision: result ? 'applied' : 'not_applied',
+        correlation_id: proposalId,
+        trace_id: span.trace_id,
+        success: result,
+        latency_ms: latencyMs,
+      });
+      this.observability.tracer.endSpan(span);
+      return result;
+    } catch (error) {
+      const latencyMs = performance.now() - start;
+      this.latencyTracker.record(latencyMs);
+      this.observability.metrics.recordPublicMethod('applyProposal', latencyMs, 'error');
+      this.auditLogger.logDecision({
+        operation: 'applyProposal',
+        decision: 'error',
+        correlation_id: proposalId,
+        trace_id: span.trace_id,
+        success: false,
+        latency_ms: latencyMs,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      this.observability.tracer.endSpan(span, error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
   }
 
   /**
@@ -1108,9 +1261,38 @@ export class GLearn {
    */
   async rollbackProposal(proposalId: string): Promise<boolean> {
     const start = performance.now();
-    const result = await this.proposalGenerator.rollbackProposal(proposalId);
-    this.latencyTracker.record(performance.now() - start);
-    return result;
+    const span = this.observability.tracer.startSpan('GLearn.rollbackProposal', { proposal_id: proposalId });
+    try {
+      const result = await this.proposalGenerator.rollbackProposal(proposalId);
+      const latencyMs = performance.now() - start;
+      this.latencyTracker.record(latencyMs);
+      this.observability.metrics.recordPublicMethod('rollbackProposal', latencyMs, result ? 'ok' : 'error');
+      this.auditLogger.logDecision({
+        operation: 'rollbackProposal',
+        decision: result ? 'rolled_back' : 'not_rolled_back',
+        correlation_id: proposalId,
+        trace_id: span.trace_id,
+        success: result,
+        latency_ms: latencyMs,
+      });
+      this.observability.tracer.endSpan(span);
+      return result;
+    } catch (error) {
+      const latencyMs = performance.now() - start;
+      this.latencyTracker.record(latencyMs);
+      this.observability.metrics.recordPublicMethod('rollbackProposal', latencyMs, 'error');
+      this.auditLogger.logDecision({
+        operation: 'rollbackProposal',
+        decision: 'error',
+        correlation_id: proposalId,
+        trace_id: span.trace_id,
+        success: false,
+        latency_ms: latencyMs,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      this.observability.tracer.endSpan(span, error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
   }
 
   /**
@@ -1200,8 +1382,9 @@ export class GLearn {
    */
   async healthCheck(): Promise<HealthCheckResult[]> {
     const start = performance.now();
+    const span = this.observability.tracer.startSpan('GLearn.healthCheck');
     const results: HealthCheckResult[] = [];
-    
+    try {
     // Check pattern_miner (internal component)
     const pmStart = performance.now();
     results.push({
@@ -1369,8 +1552,23 @@ export class GLearn {
       timestamp: new Date().toISOString(),
     });
 
-    this.latencyTracker.record(performance.now() - start);
+    const latencyMs = performance.now() - start;
+    this.latencyTracker.record(latencyMs);
+    this.observability.metrics.recordPublicMethod('healthCheck', latencyMs, 'ok');
+    for (const result of results) {
+      this.observability.metrics.observe('glearn_health_check_latency_ms', result.latency_ms, { service: result.service });
+      if (!result.healthy) this.observability.metrics.increment('glearn_health_check_errors_total', { service: result.service });
+    }
+    await this.observability.alertOnHealthDrop(healthScore, results);
+    this.observability.tracer.endSpan(span);
     return results;
+    } catch (error) {
+      const latencyMs = performance.now() - start;
+      this.latencyTracker.record(latencyMs);
+      this.observability.metrics.recordPublicMethod('healthCheck', latencyMs, 'error');
+      this.observability.tracer.endSpan(span, error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
   }
 
   private async checkLLMApiHealth(): Promise<HealthCheckResult> {
@@ -1539,27 +1737,43 @@ export class GLearn {
     endDate?: string;
   }): Promise<any[]> {
     const start = performance.now();
-    let result;
-    if (options?.startDate && options?.endDate) {
-      const startDate = new Date(options.startDate);
-      const end = new Date(options.endDate);
-      const receipts = await this.receiptRegistry.getAllBetween(startDate, end);
-      
-      // Apply limit and offset
-      result = receipts;
-      if (options.offset) {
-        result = result.slice(options.offset);
+    const span = this.observability.tracer.startSpan('GLearn.getReceipts', {
+      has_date_range: Boolean(options?.startDate && options?.endDate),
+      limit: options?.limit,
+      offset: options?.offset,
+    });
+    try {
+      let result;
+      if (options?.startDate && options?.endDate) {
+        const startDate = new Date(options.startDate);
+        const end = new Date(options.endDate);
+        const receipts = await this.receiptRegistry.getAllBetween(startDate, end);
+
+        // Apply limit and offset
+        result = receipts;
+        if (options.offset) {
+          result = result.slice(options.offset);
+        }
+        if (options.limit) {
+          result = result.slice(0, options.limit);
+        }
+      } else {
+        // If no date range, get latest
+        const latest = await this.receiptRegistry.getLatest();
+        result = latest ? [latest] : [];
       }
-      if (options.limit) {
-        result = result.slice(0, options.limit);
-      }
-    } else {
-      // If no date range, get latest
-      const latest = await this.receiptRegistry.getLatest();
-      result = latest ? [latest] : [];
+      const latencyMs = performance.now() - start;
+      this.latencyTracker.record(latencyMs);
+      this.observability.metrics.recordPublicMethod('getReceipts', latencyMs, 'ok');
+      this.observability.tracer.endSpan(span);
+      return result;
+    } catch (error) {
+      const latencyMs = performance.now() - start;
+      this.latencyTracker.record(latencyMs);
+      this.observability.metrics.recordPublicMethod('getReceipts', latencyMs, 'error');
+      this.observability.tracer.endSpan(span, error instanceof Error ? error : new Error(String(error)));
+      throw error;
     }
-    this.latencyTracker.record(performance.now() - start);
-    return result;
   }
 
   /**
@@ -1567,23 +1781,43 @@ export class GLearn {
    */
   async getDrift(metricName?: string): Promise<any[]> {
     const start = performance.now();
-    let result;
-    if (metricName) {
-      const driftResult = this.driftDetector.detectDrift(metricName);
-      result = driftResult ? [driftResult] : [];
-    } else {
-      // If no metric specified, return all available metrics
-      result = this.driftDetector.detectAllDrift();
+    const span = this.observability.tracer.startSpan('GLearn.getDrift', { metric_name: metricName });
+    try {
+      let result;
+      if (metricName) {
+        const driftResult = this.driftDetector.detectDrift(metricName);
+        result = driftResult ? [driftResult] : [];
+      } else {
+        // If no metric specified, return all available metrics
+        result = this.driftDetector.detectAllDrift();
+      }
+      const latencyMs = performance.now() - start;
+      this.latencyTracker.record(latencyMs);
+      this.observability.metrics.recordPublicMethod('getDrift', latencyMs, 'ok');
+      this.observability.tracer.endSpan(span);
+      return result;
+    } catch (error) {
+      const latencyMs = performance.now() - start;
+      this.latencyTracker.record(latencyMs);
+      this.observability.metrics.recordPublicMethod('getDrift', latencyMs, 'error');
+      this.observability.tracer.endSpan(span, error instanceof Error ? error : new Error(String(error)));
+      throw error;
     }
-    this.latencyTracker.record(performance.now() - start);
-    return result;
   }
 
   /**
    * Get cost statistics
    */
   getCostStats() {
-    return this.costLedger.getStats();
+    const start = performance.now();
+    try {
+      const result = this.costLedger.getStats();
+      this.observability.metrics.recordPublicMethod('getCostStats', performance.now() - start, 'ok');
+      return result;
+    } catch (error) {
+      this.observability.metrics.recordPublicMethod('getCostStats', performance.now() - start, 'error');
+      throw error;
+    }
   }
 
   /**
@@ -1673,7 +1907,7 @@ export class GLearn {
    */
   private async storeReceiptInGBrain(receipt: ExecutionReceipt): Promise<void> {
     if (this.isGbrainCircuitOpen()) {
-      console.warn('[GLearn] GBrain circuit breaker is open, skipping storeReceiptInGBrain');
+      this.logger.warn('GBrain circuit breaker is open, skipping storeReceiptInGBrain');
       return;
     }
 
@@ -1689,7 +1923,7 @@ export class GLearn {
     } catch (error) {
       if (error instanceof GBrainClientError) {
         this.handleGbrainError(error);
-        console.error('[GLearn] Failed to store receipt in gbrain:', error);
+        this.logger.error('Failed to store receipt in gbrain', error);
       }
     }
   }
@@ -1719,9 +1953,9 @@ export class GLearn {
     if (error.kind === 'timeout' || error.kind === 'network' || error.kind === 'server_error') {
       this.gbrainCircuitOpen = true;
       this.gbrainCircuitOpenUntil = Date.now() + this.CIRCUIT_BREAKER_TIMEOUT_MS;
-      console.warn('[GLearn] GBrain circuit breaker opened', { 
-        errorKind: error.kind, 
-        openUntil: new Date(this.gbrainCircuitOpenUntil).toISOString() 
+      this.logger.warn('GBrain circuit breaker opened', {
+        errorKind: error.kind,
+        openUntil: new Date(this.gbrainCircuitOpenUntil).toISOString()
       });
     }
   }

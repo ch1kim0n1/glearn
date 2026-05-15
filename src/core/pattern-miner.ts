@@ -11,6 +11,7 @@ import {
   CoverageGap,
 } from '../types/index.js';
 import { LLMClient } from './llm-client.js';
+import { coreLogger } from './observability.js';
 
 /**
  * Pattern Miner
@@ -159,7 +160,10 @@ export class PatternMiner {
       // No embedding API available — fall back to manual features
       return this.generateManualEmbedding(tool, data);
     } catch (error) {
-      console.warn(`[PatternMiner] Embedding API call failed for ${tool}, falling back to manual features:`, error);
+      coreLogger.warn('Embedding API call failed, falling back to manual features', {
+        tool,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return this.generateManualEmbedding(tool, data);
     }
   }
@@ -740,7 +744,9 @@ export class PatternMiner {
 
       return this.parsePatternDescription(result.content, context);
     } catch (error) {
-      console.warn('[PatternMiner] LLM description generation failed, using fallback:', error);
+      coreLogger.warn('Pattern description generation failed, using fallback', {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return this.generateFallbackDescription(context);
     }
   }

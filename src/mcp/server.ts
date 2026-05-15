@@ -5,6 +5,7 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { GLearn } from '../core/glearn.js';
+import { coreLogger } from '../core/observability.js';
 import { createAuthMiddleware, type AuthConfig, type AuthToken } from '../../../shared/src/core/token-auth.js';
 
 type McpScope = 'read' | 'write';
@@ -515,7 +516,7 @@ class GLearnMCPServer {
   async start() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    console.error('[GLearn MCP Server] Started');
+    coreLogger.info('GLearn MCP Server started');
   }
 }
 
@@ -523,7 +524,7 @@ class GLearnMCPServer {
 // @ts-ignore - CommonJS compatibility
 if (import.meta.url === `file://${process.argv[1]}`) {
   const server = new GLearnMCPServer();
-  server.start().catch(console.error);
+  server.start().catch((error) => coreLogger.error('GLearn MCP Server failed', error instanceof Error ? error : { error: String(error) }));
 }
 
 export { GLearnMCPServer };

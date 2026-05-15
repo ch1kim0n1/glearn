@@ -14,6 +14,7 @@ import { encoding_for_model, get_encoding, TiktokenModel } from 'tiktoken';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createLogger } from '../../../shared/src/core/structured-logger.js';
+import { coreLogger } from './observability.js';
 
 export interface ModelPricing {
   /** USD per 1M input tokens. */
@@ -96,7 +97,7 @@ export function estimateCostUsd(
 ): number {
   const pricing = MODEL_PRICING[modelId];
   if (!pricing) {
-    console.warn(`[LLMClient] No pricing for model: ${modelId}`);
+    coreLogger.warn('No pricing for model', { model_id: modelId });
     return 0;
   }
   return (
@@ -411,7 +412,7 @@ export class LLMClient {
       this.totalTokens = typeof parsed.totalTokens === 'number' ? parsed.totalTokens : 0;
       this.callCount = typeof parsed.callCount === 'number' ? parsed.callCount : 0;
     } catch (error) {
-      console.warn('[LLMClient] Failed to load persisted metrics:', error);
+      this.logger.warn('Failed to load persisted metrics', { error: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -429,7 +430,7 @@ export class LLMClient {
         updatedAt: new Date().toISOString(),
       }, null, 2));
     } catch (error) {
-      console.warn('[LLMClient] Failed to persist metrics:', error);
+      this.logger.warn('Failed to persist metrics', { error: error instanceof Error ? error.message : String(error) });
     }
   }
 }

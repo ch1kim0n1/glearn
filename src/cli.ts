@@ -976,6 +976,28 @@ program
     process.exit(0);
   });
 
+program
+  .command('metrics')
+  .description('Export observability metrics')
+  .option('--format <format>', 'Output format: prometheus, otel, json', 'prometheus')
+  .option('--json', 'Output observability snapshot as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (options) => {
+    const glearn = new GLearn();
+    const format = options.json ? 'json' : String(options.format || 'prometheus').toLowerCase();
+    if (format === 'prometheus') {
+      if (!options.quiet) console.log(glearn.exportPrometheusMetrics());
+    } else if (format === 'otel') {
+      if (!options.quiet) console.log(JSON.stringify(glearn.exportOpenTelemetryMetrics(), null, 2));
+    } else if (format === 'json') {
+      if (!options.quiet) console.log(JSON.stringify(glearn.getObservabilitySnapshot(), null, 2));
+    } else {
+      console.error(chalk.red('[GLearn] --format must be one of: prometheus, otel, json'));
+      process.exit(1);
+    }
+    process.exit(0);
+  });
+
 async function runReceiptRegression(against: string | undefined, options: any): Promise<void> {
   if (!against) {
     console.error(chalk.red('[GLearn] --against is required for receipt regression'));
@@ -1074,6 +1096,7 @@ function buildCompletionScript(shell: string): string | null {
     'regress',
     'cost',
     'trend',
+    'metrics',
     'completion',
   ];
   const options = [

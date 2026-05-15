@@ -4,16 +4,23 @@
  */
 
 import { Command } from './command-registry.js';
+import { GLearn } from '../core/glearn.js';
 
 export const metricsCommand: Command = {
   name: 'metrics',
   description: 'View and export metrics',
   handler: async (args: string[]) => {
-    console.log('GLearn metrics:');
-    console.log('  Total patterns: 0');
-    console.log('  Total proposals: 0');
-    console.log('  Total evaluations: 0');
-    console.log('  Total learning runs: 0');
+    const format = valueAfter(args, '--format') || (args.includes('--prometheus') ? 'prometheus' : args.includes('--otel') ? 'otel' : 'json');
+    const glearn = new GLearn();
+    if (format === 'prometheus') {
+      console.log(glearn.exportPrometheusMetrics());
+      return;
+    }
+    if (format === 'otel') {
+      console.log(JSON.stringify(glearn.exportOpenTelemetryMetrics(), null, 2));
+      return;
+    }
+    console.log(JSON.stringify(glearn.getObservabilitySnapshot(), null, 2));
   },
   subcommands: [
     {
@@ -21,7 +28,16 @@ export const metricsCommand: Command = {
       description: 'Export metrics',
       handler: async (args: string[]) => {
         const format = args[0] || 'json';
-        console.log(`Exporting metrics as ${format}...`);
+        const glearn = new GLearn();
+        if (format === 'prometheus') {
+          console.log(glearn.exportPrometheusMetrics());
+          return;
+        }
+        if (format === 'otel') {
+          console.log(JSON.stringify(glearn.exportOpenTelemetryMetrics(), null, 2));
+          return;
+        }
+        console.log(JSON.stringify(glearn.getObservabilitySnapshot(), null, 2));
       },
     },
     {
@@ -33,3 +49,8 @@ export const metricsCommand: Command = {
     },
   ],
 };
+
+function valueAfter(args: string[], flag: string): string | undefined {
+  const index = args.indexOf(flag);
+  return index >= 0 ? args[index + 1] : undefined;
+}

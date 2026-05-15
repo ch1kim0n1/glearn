@@ -4,6 +4,7 @@ import {
   Proposal,
 } from '../types/index.js';
 import { LLMClient } from './llm-client.js';
+import { coreLogger } from './observability.js';
 
 /**
  * Counterfactual Evaluator
@@ -58,7 +59,9 @@ export class CounterfactualEvaluator {
         evaluated_at: new Date().toISOString(),
       };
     } catch (error) {
-      console.warn('[CounterfactualEvaluator] LLM evaluation failed, using fallback:', error);
+      coreLogger.warn('Counterfactual LLM evaluation failed, using fallback', {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return this.fallbackEvaluation(proposal, baselineMetrics, counterfactualMetrics, delta);
     }
   }

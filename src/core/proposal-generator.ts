@@ -7,7 +7,7 @@ import {
   GStackData,
 } from '../types/index.js';
 import { LLMClient } from './llm-client.js';
-import { StructuredLogger } from '../../../shared/src/observability/structured-logger.js';
+import { LocalLogger, type LogLevel } from './observability.js';
 
 /**
  * Proposal Generator
@@ -20,11 +20,11 @@ import { StructuredLogger } from '../../../shared/src/observability/structured-l
  */
 export class ProposalGenerator {
   private llmClient: LLMClient;
-  private logger: StructuredLogger;
+  private logger: LocalLogger;
 
   constructor(llmClient?: LLMClient) {
     this.llmClient = llmClient || new LLMClient();
-    this.logger = new StructuredLogger('glearn-proposal-generator');
+    this.logger = new LocalLogger('glearn-proposal-generator', (process.env.GLEARN_LOG_LEVEL as LogLevel) || 'INFO');
   }
 
   /**
@@ -97,7 +97,7 @@ export class ProposalGenerator {
       };
       return await this.generateLLMProposalHypothesis(pattern, fallback);
     } catch (error) {
-      console.warn('[ProposalGenerator] LLM proposal generation failed, using fallback:', error);
+      this.logger.warn('LLM proposal generation failed, using fallback', { error: error instanceof Error ? error.message : String(error) });
       return this.fallbackConfigProposal(pattern);
     }
   }
@@ -135,7 +135,7 @@ export class ProposalGenerator {
       };
       return await this.generateLLMProposalHypothesis(pattern, fallback);
     } catch (error) {
-      console.warn('[ProposalGenerator] LLM proposal generation failed, using fallback:', error);
+      this.logger.warn('LLM proposal generation failed, using fallback', { error: error instanceof Error ? error.message : String(error) });
       return {
         proposal_id: uuidv4(),
         proposal_type: 'library_expansion',
@@ -196,7 +196,7 @@ export class ProposalGenerator {
       };
       return await this.generateLLMProposalHypothesis(pattern, fallback);
     } catch (error) {
-      console.warn('[ProposalGenerator] LLM proposal generation failed, using fallback:', error);
+      this.logger.warn('LLM proposal generation failed, using fallback', { error: error instanceof Error ? error.message : String(error) });
       return {
         proposal_id: uuidv4(),
         proposal_type: 'calibration_adjustment',
@@ -255,7 +255,7 @@ export class ProposalGenerator {
       };
       return await this.generateLLMProposalHypothesis(pattern, fallback);
     } catch (error) {
-      console.warn('[ProposalGenerator] LLM proposal generation failed, using fallback:', error);
+      this.logger.warn('LLM proposal generation failed, using fallback', { error: error instanceof Error ? error.message : String(error) });
       return {
         proposal_id: uuidv4(),
         proposal_type: 'workflow_optimization',
