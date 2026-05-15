@@ -386,61 +386,51 @@ program
   .command('drift')
   .description('Check for pattern drift over time')
   .option('--corpus <path>', 'Path to corpus directory for drift data', './.gbrain-corpus')
+  .option('--window <duration>', 'Current analysis window, e.g. 7d, 24h, 30m', '7d')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     try {
-      const { DriftDetector } = await import('../../shared/src/core/drift-detector.js');
-      const detector = new DriftDetector({
-        window_size: 100,
-        drift_threshold: 0.2,
-        alert_threshold: 0.3,
-        baseline_period_ms: 7 * 24 * 60 * 60 * 1000,
-      });
-
-      // For MVP, we'll demonstrate with sample data
-      // In production, this would load historical metrics from corpus
-      const sampleMetrics = [
-        { name: 'patterns_found', values: Array.from({ length: 50 }, () => 10 + Math.random() * 5) },
-        { name: 'proposals_generated', values: Array.from({ length: 50 }, () => 5 + Math.random() * 3) },
-        { name: 'duration_ms', values: Array.from({ length: 50 }, () => 500 + Math.random() * 100) },
-      ];
-
-      // Record snapshots
-      sampleMetrics.forEach(metric => {
-        metric.values.forEach((value, i) => {
-          const timestamp = new Date(Date.now() - (50 - i) * 3600000).toISOString();
-          detector['recordSnapshot'](metric.name, value, { timestamp });
-        });
-      });
-
-      const driftResults = detector.detectAllDrift();
-      const alerts = detector.getAlerts();
+      const { ReceiptRegistry } = await import('./core/receipt-registry.js');
+      const { analyzeCohortDrift, executionReceiptToCohortSnapshot, parseWindowDuration } = await import('./core/drift-analysis.js');
+      const windowMs = parseWindowDuration(options.window);
+      const registry = new ReceiptRegistry('glearn');
+      const end = new Date();
+      const start = new Date(end.getTime() - windowMs * 2);
+      const receipts = await registry.getAllBetween(start, end);
+      const snapshots = receipts.map(executionReceiptToCohortSnapshot);
+      const driftResults = analyzeCohortDrift(snapshots, { windowMs, now: end, seed: 'glearn-drift' });
+      const alerts = driftResults.filter(result =>
+        result.anomalies.length > 0 || result.frustration_wilson_95_ci.degraded,
+      );
 
       if (options.json) {
         console.log(JSON.stringify({
-          metrics: detector.getMetricNames(),
+          window: options.window,
+          cohorts: driftResults,
           drift_results: driftResults,
           alerts,
         }, null, 2));
       } else if (!options.quiet) {
         console.log(chalk.blue.bold('[GLearn] Checking for pattern drift'));
         console.log(chalk.green.bold('\n[GLearn] Drift Analysis'));
-        console.log(chalk.gray(`Metrics tracked: ${detector.getMetricNames().join(', ')}`));
-        console.log(chalk.gray(`Drift detected: ${driftResults.some(d => d.drift_detected) ? 'Yes' : 'No'}`));
+        console.log(chalk.gray(`Window: ${options.window}`));
+        console.log(chalk.gray(`Receipts checked: ${receipts.length}`));
+        console.log(chalk.gray(`Cohorts tracked: ${driftResults.length}`));
+        console.log(chalk.gray(`Drift detected: ${alerts.length > 0 ? 'Yes' : 'No'}`));
         
         if (driftResults.length > 0) {
           console.log(chalk.bold('\nDrift Results:'));
           for (const result of driftResults) {
-            const status = result.drift_detected ? chalk.red('⚠') : chalk.green('✓');
-            console.log(`  ${status} ${result.metric_name}: ${result.drift_magnitude.toFixed(3)} (${result.trend})`);
+            const status = result.anomalies.length > 0 || result.frustration_wilson_95_ci.degraded ? chalk.red('ALERT') : chalk.green('OK');
+            console.log(`  ${status} ${result.cohort}: samples=${result.sample_size} anomalies=${result.anomalies.length} new=${result.brand_new}`);
           }
         }
 
         if (alerts.length > 0) {
           console.log(chalk.red.bold('\nAlerts:'));
           for (const alert of alerts) {
-            console.log(`  ${alert.metric_name}: ${alert.drift_magnitude.toFixed(3)} (threshold: 0.3)`);
+            console.log(`  ${alert.cohort}: ${alert.anomalies.map((anomaly: any) => `${anomaly.metric}:${anomaly.reason}`).join(', ') || 'receipt_verdict_wilson_degraded'}`);
           }
         }
       }

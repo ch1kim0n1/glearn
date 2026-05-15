@@ -32,7 +32,8 @@ import {
   GBrainClientConfig,
   GBrainClientError,
 } from '../../../shared/src/core/gbrain-client.js';
-import { DriftDetector } from '../../../shared/src/core/drift-detector.js';
+import { DriftDetector, DriftResult } from '../../../shared/src/core/drift-detector.js';
+import { deriveReceiptVerdictFromDrift } from './drift-analysis.js';
 import { LatencyTracker } from '../../../shared/src/core/latency-tracker.js';
 import { AuditLogger } from '../../../shared/src/core/audit-logger.js';
 import { StructuredLogger } from '../../../shared/src/observability/structured-logger.js';
@@ -1396,6 +1397,8 @@ export class GLearn {
     const agreeingVotes = Math.round((this.lastConsensusSummary?.agreement_ratio || 0) * validVotes);
     const verdictInterval = this.wilson95(agreeingVotes, validVotes);
     const consensusConfidence = this.lastConsensusSummary?.agreement_ratio ?? 0.6;
+    const driftResults = this.recordRunDriftMetrics(run, overallScore, costUsd);
+    const receiptVerdict = deriveReceiptVerdictFromDrift(passed, driftResults);
 
     return {
       receipt_id: uuidv4(),
@@ -1407,13 +1410,13 @@ export class GLearn {
       input_hash: inputHash,
       models_used: modelList,
       config_hash: configHash,
-      verdict: passed ? 'pass' : 'fail',
+      verdict: receiptVerdict,
       scores: {
         pattern_quality: { score: overallScore, confidence: consensusConfidence, weight: 0.5 },
         proposal_relevance: { score: overallScore, confidence: consensusConfidence, weight: 0.5 },
       },
       overall_score: overallScore,
-      hard_gates_passed: passed,
+      hard_gates_passed: passed && receiptVerdict !== 'risky',
       cost_usd: Math.max(0, costUsd),
       errors: run.error_message ? [run.error_message] : [],
       metadata: {
@@ -1425,11 +1428,36 @@ export class GLearn {
         run_counterfactual: request.run_counterfactual,
         consensus: this.lastConsensusSummary,
         verdict_wilson_95_ci: verdictInterval,
+        drift_detected: driftResults.some(result => result.drift_detected),
+        drift_results: driftResults,
         small_sample_note: (run.patterns_found + run.proposals_generated + run.evaluations_completed) < 30,
         llm_total_cost_usd: this.llmClient.getTotalCostUsd(),
         budget_status: this.costLedger.getStatus(),
       },
     };
+  }
+
+  private recordRunDriftMetrics(run: LearningRun, overallScore: number, costUsd: number): DriftResult[] {
+    const context = {
+      run_id: run.run_id,
+      run_type: run.run_type,
+      status: run.status,
+    };
+    const metrics: Record<string, number> = {
+      patterns_found: run.patterns_found,
+      proposals_generated: run.proposals_generated,
+      evaluations_completed: run.evaluations_completed,
+      overall_score: overallScore,
+      cost_usd: Math.max(0, costUsd),
+    };
+
+    for (const [metric, value] of Object.entries(metrics)) {
+      if (Number.isFinite(value)) {
+        this.driftDetector.recordSnapshot(metric, value, context);
+      }
+    }
+
+    return this.driftDetector.detectAllDrift();
   }
 
   /**
