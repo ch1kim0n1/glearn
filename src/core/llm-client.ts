@@ -31,6 +31,14 @@ export interface LLMCallResult {
   latency_ms: number;
 }
 
+export interface EmbeddingResult {
+  embedding: number[];
+  input_tokens: number;
+  model_id: string;
+  cost_usd: number;
+  latency_ms: number;
+}
+
 export interface LLMClientConfig {
   anthropicApiKey?: string;
   openaiApiKey?: string;
@@ -57,6 +65,8 @@ export const OPENAI_PRICING: Record<string, ModelPricing> = {
   'gpt-4o-mini': { input: 0.15, output: 0.60, avg_latency_ms: 300 },
   'gpt-4-turbo': { input: 10.00, output: 30.00, avg_latency_ms: 3000 },
   'gpt-3.5-turbo': { input: 0.50, output: 1.50, avg_latency_ms: 800 },
+  'text-embedding-3-small': { input: 0.02, output: 0.00, avg_latency_ms: 250 },
+  'text-embedding-3-large': { input: 0.13, output: 0.00, avg_latency_ms: 500 },
 };
 
 /** Combined pricing map */
@@ -263,6 +273,57 @@ export class LLMClient {
       content: response.choices[0].message.content || '',
       outputTokens: response.usage?.completion_tokens || 0,
     };
+  }
+
+  /**
+   * Generate a real embedding using OpenAI's embeddings API.
+   */
+  async getEmbedding(
+    input: string,
+    options: {
+      model?: string;
+      provider?: 'openai';
+    } = {}
+  ): Promise<EmbeddingResult> {
+    const model = options.model || 'text-embedding-3-small';
+    const startTime = Date.now();
+    const inputTokens = estimateTokens(input, model);
+
+    const embedding = await this.callOpenAIEmbeddings(input, model);
+    const latency = Date.now() - startTime;
+    const cost = estimateCostUsd(model, inputTokens, 0);
+
+    this.totalCostUsd += cost;
+    this.totalTokens += inputTokens;
+    this.callCount++;
+
+    if (this.config.onSpend) {
+      await this.config.onSpend(model, inputTokens, 0, cost);
+    }
+
+    return {
+      embedding,
+      input_tokens: inputTokens,
+      model_id: model,
+      cost_usd: cost,
+      latency_ms: latency,
+    };
+  }
+
+  private async callOpenAIEmbeddings(input: string, model: string): Promise<number[]> {
+    if (!this.openaiClient) {
+      throw new Error('OpenAI API key not provided');
+    }
+
+    const response = await this.openaiClient.embeddings.create({
+      model,
+      input,
+    });
+    const embedding = response.data[0]?.embedding;
+    if (!embedding || embedding.length === 0) {
+      throw new Error('OpenAI embeddings response did not include an embedding');
+    }
+    return embedding;
   }
 
   /**

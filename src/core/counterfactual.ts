@@ -201,15 +201,19 @@ export class CounterfactualEvaluator {
     // Require all causal-reasoning fields to be present; otherwise let the caller
     // fall back to the deterministic heuristic. Prevents the simulator's generic
     // {action, confidence} response from short-circuiting real reasoning.
+    const validConclusions = ['positive', 'negative', 'neutral'];
+    const validRecommendations = ['apply', 'ignore', 'needs_more_data'];
     if (
       typeof parsed.significance !== 'number' ||
       typeof parsed.conclusion !== 'string' ||
-      typeof parsed.recommendation !== 'string'
+      typeof parsed.recommendation !== 'string' ||
+      !validConclusions.includes(parsed.conclusion) ||
+      !validRecommendations.includes(parsed.recommendation)
     ) {
       throw new Error('LLM response missing required causal-reasoning fields');
     }
     return {
-      significance: parsed.significance,
+      significance: Math.max(0, Math.min(1, parsed.significance)),
       conclusion: parsed.conclusion,
       recommendation: parsed.recommendation,
       reasoning: parsed.reasoning || 'LLM evaluation completed',

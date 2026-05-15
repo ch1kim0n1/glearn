@@ -180,6 +180,40 @@ describe('ProposalGenerator', () => {
   // --------------------------------------------------------------------------
   // 10. approveProposal / rejectProposal return updated status
   // --------------------------------------------------------------------------
+  it('uses LLM-generated proposal hypotheses when available', async () => {
+    const llmClient = {
+      getModelByTier: () => 'test-model',
+      call: async () => ({
+        content: JSON.stringify({
+          target_component: 'adaptive_parallelism_policy',
+          current_value: { max_parallelism: 8, budget_multiplier: 1.0 },
+          proposed_value: { max_parallelism: 4, budget_multiplier: 0.7 },
+          rationale: 'The expensive configuration has weak success, so reducing parallelism should lower cost without sacrificing quality.',
+          expected_impact: { improvement: 0.44, confidence: 0.68 },
+          risk_assessment: {
+            risk_level: 'medium',
+            potential_side_effects: ['Longer wall-clock time on broad tasks'],
+            rollback_plan: 'Restore prior parallelism if success rate falls below baseline.',
+          },
+        }),
+        input_tokens: 10,
+        output_tokens: 10,
+        model_id: 'test-model',
+        cost_usd: 0,
+        latency_ms: 1,
+      }),
+    };
+    const llmGenerator = new ProposalGenerator(llmClient as any);
+
+    const proposals = await llmGenerator.generateProposals([makeConfigPattern()]);
+
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0].target_component).toBe('adaptive_parallelism_policy');
+    expect(proposals[0].proposed_value).toEqual({ max_parallelism: 4, budget_multiplier: 0.7 });
+    expect(proposals[0].expected_impact.improvement).toBe(0.44);
+    expect(proposals[0].risk_assessment.rollback_plan).toContain('Restore prior parallelism');
+  });
+
   it('approveProposal returns a proposal with status approved', async () => {
     const id = uuidv4();
     const approved = generator.approveProposal(id, 'alice');

@@ -204,4 +204,35 @@ describe('CounterfactualEvaluator', () => {
     const result = await evaluator.evaluateProposal(proposal, baseline, counterfactual);
     expect(result.proposal_id).toBe(proposalId);
   });
+
+  it('uses structured LLM causal reasoning when available', async () => {
+    const llmClient = {
+      getModelByTier: () => 'test-model',
+      call: async () => ({
+        content: JSON.stringify({
+          significance: 0.72,
+          conclusion: 'positive',
+          recommendation: 'apply',
+          reasoning: 'Lower cost with higher success is causally consistent with the proposal.',
+        }),
+        input_tokens: 10,
+        output_tokens: 10,
+        model_id: 'test-model',
+        cost_usd: 0,
+        latency_ms: 1,
+      }),
+    };
+    const llmEvaluator = new CounterfactualEvaluator(llmClient as any);
+
+    const result = await llmEvaluator.evaluateProposal(
+      makeProposal(),
+      { success_rate: 0.7, cost: 1.0 },
+      { success_rate: 0.8, cost: 0.8 },
+    );
+
+    expect(result.statistical_significance).toBe(0.72);
+    expect(result.conclusion).toBe('positive');
+    expect(result.recommendation).toBe('apply');
+    expect(result.reasoning).toContain('causally consistent');
+  });
 });

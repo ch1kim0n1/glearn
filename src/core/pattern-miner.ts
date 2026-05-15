@@ -733,11 +733,39 @@ export class PatternMiner {
         temperature: 0.5,
       });
 
-      return result.content.trim();
+      return this.parsePatternDescription(result.content, context);
     } catch (error) {
       console.warn('[PatternMiner] LLM description generation failed, using fallback:', error);
       return this.generateFallbackDescription(context);
     }
+  }
+
+  private parsePatternDescription(content: string, context: {
+    pattern_type: string;
+    tools?: string[];
+    similarity?: number;
+    cluster_size?: number;
+    drift?: number;
+    failure_rate?: number;
+    skill_count?: number;
+    config?: string;
+    avg_cost?: number;
+  }): string {
+    const trimmed = content.trim();
+    if (!trimmed || trimmed === 'Processed') {
+      return this.generateFallbackDescription(context);
+    }
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed.description === 'string' && parsed.description.trim()) {
+        return parsed.description.trim();
+      }
+    } catch (error) {
+      // Plain-text descriptions are allowed.
+    }
+
+    return trimmed;
   }
 
   /**

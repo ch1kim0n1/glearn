@@ -68,9 +68,7 @@ export class ProposalGenerator {
     if (!pattern.metadata?.config) return null;
 
     try {
-      const rationale = await this.generateLLMRationale(pattern, 'configuration_change');
-      
-      return {
+      const fallback: Proposal = {
         proposal_id: uuidv4(),
         proposal_type: 'configuration_change',
         target_tool: 'GOrchestrator',
@@ -80,7 +78,7 @@ export class ProposalGenerator {
           max_parallelism: 3,
           budget_multiplier: 0.8,
         },
-        rationale,
+        rationale: `Configuration ${pattern.metadata.config} is expensive relative to its observed success rate.`,
         expected_impact: {
           improvement: 0.3,
           confidence: pattern.confidence,
@@ -97,8 +95,9 @@ export class ProposalGenerator {
         status: 'pending',
         created_at: new Date().toISOString(),
       };
+      return await this.generateLLMProposalHypothesis(pattern, fallback);
     } catch (error) {
-      console.warn('[ProposalGenerator] LLM rationale generation failed, using fallback:', error);
+      console.warn('[ProposalGenerator] LLM proposal generation failed, using fallback:', error);
       return this.fallbackConfigProposal(pattern);
     }
   }
@@ -110,16 +109,14 @@ export class ProposalGenerator {
     const targetTool = pattern.source_tools[0] as Proposal['target_tool'];
 
     try {
-      const rationale = await this.generateLLMRationale(pattern, 'library_expansion');
-
-      return {
+      const fallback: Proposal = {
         proposal_id: uuidv4(),
         proposal_type: 'library_expansion',
         target_tool: targetTool,
         target_component: 'test_library',
         current_value: 'current_coverage',
         proposed_value: 'expanded_coverage',
-        rationale,
+        rationale: pattern.description,
         expected_impact: {
           improvement: 0.4,
           confidence: pattern.confidence,
@@ -136,8 +133,9 @@ export class ProposalGenerator {
         status: 'pending',
         created_at: new Date().toISOString(),
       };
+      return await this.generateLLMProposalHypothesis(pattern, fallback);
     } catch (error) {
-      console.warn('[ProposalGenerator] LLM rationale generation failed, using fallback:', error);
+      console.warn('[ProposalGenerator] LLM proposal generation failed, using fallback:', error);
       return {
         proposal_id: uuidv4(),
         proposal_type: 'library_expansion',
@@ -172,16 +170,14 @@ export class ProposalGenerator {
     const targetTool = pattern.source_tools[0] as Proposal['target_tool'];
 
     try {
-      const rationale = await this.generateLLMRationale(pattern, 'calibration_adjustment');
-
-      return {
+      const fallback: Proposal = {
         proposal_id: uuidv4(),
         proposal_type: 'calibration_adjustment',
         target_tool: targetTool,
         target_component: 'calibration_weights',
         current_value: 'current_weights',
         proposed_value: 'recalibrated_weights',
-        rationale,
+        rationale: `Drift detected in ${targetTool}. Recalibration may restore expected behavior.`,
         expected_impact: {
           improvement: 0.5,
           confidence: pattern.confidence,
@@ -198,8 +194,9 @@ export class ProposalGenerator {
         status: 'pending',
         created_at: new Date().toISOString(),
       };
+      return await this.generateLLMProposalHypothesis(pattern, fallback);
     } catch (error) {
-      console.warn('[ProposalGenerator] LLM rationale generation failed, using fallback:', error);
+      console.warn('[ProposalGenerator] LLM proposal generation failed, using fallback:', error);
       return {
         proposal_id: uuidv4(),
         proposal_type: 'calibration_adjustment',
@@ -232,16 +229,14 @@ export class ProposalGenerator {
    */
   private async generateCorrelationProposal(pattern: Pattern): Promise<Proposal> {
     try {
-      const rationale = await this.generateLLMRationale(pattern, 'workflow_optimization');
-
-      return {
+      const fallback: Proposal = {
         proposal_id: uuidv4(),
         proposal_type: 'workflow_optimization',
         target_tool: 'GAgent' as Proposal['target_tool'],
         target_component: 'pipeline_flow',
         current_value: 'current_pipeline',
         proposed_value: 'optimized_pipeline',
-        rationale,
+        rationale: pattern.description,
         expected_impact: {
           improvement: 0.35,
           confidence: pattern.confidence,
@@ -258,8 +253,9 @@ export class ProposalGenerator {
         status: 'pending',
         created_at: new Date().toISOString(),
       };
+      return await this.generateLLMProposalHypothesis(pattern, fallback);
     } catch (error) {
-      console.warn('[ProposalGenerator] LLM rationale generation failed, using fallback:', error);
+      console.warn('[ProposalGenerator] LLM proposal generation failed, using fallback:', error);
       return {
         proposal_id: uuidv4(),
         proposal_type: 'workflow_optimization',
@@ -365,6 +361,119 @@ export class ProposalGenerator {
     // In production, would integrate with tool APIs to rollback changes
     this.logger.info(`Rolling back proposal: ${proposalId}`);
     return true;
+  }
+
+  /**
+   * Generate the concrete hypothesis, proposed value, impact, and risk model
+   * with an LLM while preserving schema invariants and safe fallback defaults.
+   */
+  private async generateLLMProposalHypothesis(pattern: Pattern, fallback: Proposal): Promise<Proposal> {
+    const prompt = this.buildProposalHypothesisPrompt(pattern, fallback);
+    const result = await this.llmClient.call(prompt, {
+      model: this.llmClient.getModelByTier('tier1'),
+      maxTokens: 768,
+      temperature: 0.4,
+    });
+
+    const parsed = JSON.parse(this.extractJsonObject(result.content));
+    return this.normalizeLLMProposal(parsed, fallback);
+  }
+
+  private buildProposalHypothesisPrompt(pattern: Pattern, fallback: Proposal): string {
+    return `Generate a production proposal hypothesis from this GLearn pattern.
+
+Pattern:
+${JSON.stringify({
+  pattern_type: pattern.pattern_type,
+  description: pattern.description,
+  confidence: pattern.confidence,
+  evidence: pattern.evidence,
+  source_tools: pattern.source_tools,
+  observation_count: pattern.observation_count,
+  metadata: pattern.metadata,
+}, null, 2)}
+
+Fixed proposal fields:
+${JSON.stringify({
+  proposal_type: fallback.proposal_type,
+  target_tool: fallback.target_tool,
+  status: fallback.status,
+}, null, 2)}
+
+Return strict JSON with these fields:
+{
+  "target_component": "specific component to change",
+  "current_value": "current state or object",
+  "proposed_value": "specific proposed state or object",
+  "rationale": "causal hypothesis grounded in the evidence",
+  "expected_impact": { "improvement": 0.0, "confidence": 0.0 },
+  "risk_assessment": {
+    "risk_level": "low" | "medium" | "high",
+    "potential_side_effects": ["side effect"],
+    "rollback_plan": "concrete rollback plan"
+  }
+}`;
+  }
+
+  private normalizeLLMProposal(parsed: any, fallback: Proposal): Proposal {
+    const risk = parsed?.risk_assessment || {};
+    const expectedImpact = parsed?.expected_impact || {};
+    const sideEffects = Array.isArray(risk.potential_side_effects)
+      ? risk.potential_side_effects.filter((item: unknown) => typeof item === 'string' && item.trim())
+      : fallback.risk_assessment.potential_side_effects;
+
+    return {
+      ...fallback,
+      target_component: typeof parsed?.target_component === 'string' && parsed.target_component.trim()
+        ? parsed.target_component.trim()
+        : fallback.target_component,
+      current_value: Object.prototype.hasOwnProperty.call(parsed || {}, 'current_value')
+        ? parsed.current_value
+        : fallback.current_value,
+      proposed_value: Object.prototype.hasOwnProperty.call(parsed || {}, 'proposed_value')
+        ? parsed.proposed_value
+        : fallback.proposed_value,
+      rationale: typeof parsed?.rationale === 'string' && parsed.rationale.trim()
+        ? parsed.rationale.trim()
+        : fallback.rationale,
+      expected_impact: {
+        improvement: this.clampNumber(expectedImpact.improvement, fallback.expected_impact.improvement),
+        confidence: this.clampNumber(expectedImpact.confidence, fallback.expected_impact.confidence),
+        evidence_count: fallback.expected_impact.evidence_count,
+      },
+      risk_assessment: {
+        risk_level: this.normalizeRiskLevel(risk.risk_level, fallback.risk_assessment.risk_level),
+        potential_side_effects: sideEffects.length > 0
+          ? sideEffects
+          : fallback.risk_assessment.potential_side_effects,
+        rollback_plan: typeof risk.rollback_plan === 'string' && risk.rollback_plan.trim()
+          ? risk.rollback_plan.trim()
+          : fallback.risk_assessment.rollback_plan,
+      },
+    };
+  }
+
+  private extractJsonObject(content: string): string {
+    const trimmed = content.trim();
+    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenced) return fenced[1].trim();
+
+    const start = trimmed.indexOf('{');
+    const end = trimmed.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      return trimmed.slice(start, end + 1);
+    }
+    return trimmed;
+  }
+
+  private clampNumber(value: unknown, fallback: number): number {
+    return typeof value === 'number' && Number.isFinite(value)
+      ? Math.max(0, Math.min(1, value))
+      : fallback;
+  }
+
+  private normalizeRiskLevel(value: unknown, fallback: Proposal['risk_assessment']['risk_level']): Proposal['risk_assessment']['risk_level'] {
+    return value === 'low' || value === 'medium' || value === 'high' ? value : fallback;
   }
 
   /**

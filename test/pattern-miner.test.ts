@@ -274,4 +274,35 @@ describe('PatternMiner', () => {
     miner.clearPatterns();
     expect(miner.getPatterns()).toHaveLength(0);
   });
+
+  it('uses injected embedding and description LLM calls for cross-tool patterns', async () => {
+    const llmClient = {
+      getEmbedding: async () => ({
+        embedding: [0.2, 0.8, 0.1],
+        input_tokens: 4,
+        model_id: 'text-embedding-3-small',
+        cost_usd: 0,
+        latency_ms: 1,
+      }),
+      getModelByTier: () => 'test-model',
+      call: async () => ({
+        content: 'LLM identified shared cost and quality movement across tools.',
+        input_tokens: 10,
+        output_tokens: 10,
+        model_id: 'test-model',
+        cost_usd: 0,
+        latency_ms: 1,
+      }),
+    };
+    const llmMiner = new PatternMiner(llmClient as any);
+
+    llmMiner.ingestData('GOrchestrator', makeOrchestratorData());
+    llmMiner.ingestData('GMirror', makeMirrorData());
+
+    const patterns = await llmMiner.minePatterns();
+    const correlation = patterns.find(p => p.pattern_type === 'cross_tool_correlation');
+
+    expect(correlation).toBeDefined();
+    expect(correlation!.description).toContain('LLM identified');
+  });
 });
