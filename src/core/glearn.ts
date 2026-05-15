@@ -213,6 +213,18 @@ export class GLearn {
       consensus_agreement_rate: 0,
       budget_remaining_usd: this.multiModelConfig.cost_budget_usd_per_hour,
     };
+    const persistedEscalationMetrics = this.persistenceDb.loadEscalationMetrics<EscalationMetrics>();
+    if (persistedEscalationMetrics) {
+      this.escalationMetrics = {
+        ...this.escalationMetrics,
+        ...persistedEscalationMetrics,
+      };
+    }
+    const persistedPatterns = this.persistenceDb.getAllPatterns();
+    const persistedDataStore = this.persistenceDb.getDataStoreEntries();
+    if (persistedPatterns.length > 0 || persistedDataStore.length > 0) {
+      this.patternMiner.hydrate(persistedPatterns, persistedDataStore);
+    }
     
     // Initialize persistence for patterns, proposals, and metrics
     const initialState = {
@@ -268,6 +280,30 @@ export class GLearn {
         scope: 'learning_cycle',
         resolver: 'llm',
       },
+    });
+    this.persistenceDb.transaction(() => {
+      this.persistenceDb.addLlmCall({
+        id: reservation.id,
+        model_id: modelId,
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        cost_usd: costUsd,
+        operation: 'learning_cycle_llm',
+        metadata: {
+          scope: 'learning_cycle',
+          resolver: 'llm',
+        },
+      });
+      this.persistenceDb.addCostEntry({
+        id: reservation.id,
+        operation: 'learning_cycle_llm',
+        model_id: modelId,
+        cost_usd: costUsd,
+        metadata: {
+          scope: 'learning_cycle',
+          resolver: 'llm',
+        },
+      });
     });
   }
 
@@ -379,9 +415,15 @@ export class GLearn {
       await this.persistenceManager.updateState(state => ({
         ...state,
         patterns: this.patternMiner.getPatterns(),
-        proposals: [], // Proposals are generated per-cycle, not persisted long-term
+        proposals,
         escalationMetrics: this.escalationMetrics,
       }));
+      this.persistenceDb.transaction(() => {
+        this.persistenceDb.replacePatterns(this.patternMiner.getPatterns());
+        this.persistenceDb.replaceProposals(proposals);
+        this.persistenceDb.replaceDataStore(Array.from(this.patternMiner.getDataStore().entries()));
+        this.persistenceDb.saveEscalationMetrics(this.escalationMetrics);
+      });
     } catch (error) {
       run.status = 'failed';
       run.error_message = error instanceof Error ? error.message : String(error);
@@ -401,6 +443,7 @@ export class GLearn {
         ...state,
         escalationMetrics: this.escalationMetrics,
       }));
+      this.persistenceDb.saveEscalationMetrics(this.escalationMetrics);
     }
 
     this.latencyTracker.record(performance.now() - start);

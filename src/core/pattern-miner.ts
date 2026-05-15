@@ -711,6 +711,11 @@ export class PatternMiner {
     return this.dataStore;
   }
 
+  hydrate(patterns: Pattern[], dataStoreEntries: Array<[string, any]> = []): void {
+    this.patterns = [...patterns];
+    this.dataStore = new Map(dataStoreEntries);
+  }
+
   /**
    * Generate pattern description using LLM
    */
