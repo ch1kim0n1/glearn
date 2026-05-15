@@ -595,7 +595,7 @@ program
   .option('--json', 'Output as JSON')
   .action(async (options) => {
     try {
-      const { BudgetLedger } = await import('../../shared/src/core/budget-ledger.js');
+      const { BudgetLedger } = await import('./core/budget-ledger.js');
       const ledger = new BudgetLedger({ max_budget_usd: 1000 }, 'glearn');
       await ledger.init();
 
@@ -614,7 +614,7 @@ program
           breakdown['by_model'] = ledger.getSpendByModel();
         }
         if (options.byOperation) {
-          breakdown['by_operation'] = ledger.getSpendByModel();
+          breakdown['by_operation'] = ledger.getSpendByOperation();
         }
         console.log(JSON.stringify({ spend, ...breakdown }, null, 2));
       } else {
@@ -630,7 +630,7 @@ program
         }
         
         if (options.byOperation) {
-          const byOp = ledger.getSpendByModel();
+          const byOp = ledger.getSpendByOperation();
           console.log(chalk.gray('\nBy operation:'));
           for (const [op, cost] of Object.entries(byOp)) {
             console.log(`  ${op}: $${(cost as number).toFixed(4)}`);

@@ -1,5 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import * as crypto from 'crypto';
+import * as os from 'os';
+import * as path from 'path';
 import {
   Pattern,
   Proposal,
@@ -19,6 +21,8 @@ import {
 import { PatternMiner } from './pattern-miner.js';
 import { ProposalGenerator } from './proposal-generator.js';
 import { CounterfactualEvaluator } from './counterfactual.js';
+import { LLMClient } from './llm-client.js';
+import { BudgetLedger } from './budget-ledger.js';
 import { ReceiptRegistry } from './receipt-registry.js';
 import { GLearnPersistenceManager } from './glearn-persistence.js';
 import { ExecutionReceipt } from '../types/quality-rubric.js';
@@ -28,7 +32,6 @@ import {
   GBrainClientError,
 } from '../../../shared/src/core/gbrain-client.js';
 import { DriftDetector } from '../../../shared/src/core/drift-detector.js';
-import { CostLedger } from '../../../shared/src/core/cost-ledger.js';
 import { LatencyTracker } from '../../../shared/src/core/latency-tracker.js';
 import { AuditLogger } from '../../../shared/src/core/audit-logger.js';
 import { StructuredLogger } from '../../../shared/src/observability/structured-logger.js';
@@ -59,7 +62,9 @@ export class GLearn {
   private persistenceDb: GLearnPersistenceManager;
   private multiModelConfig: MultiModelConfig;
   private driftDetector: DriftDetector;
-  private costLedger: CostLedger;
+  private costLedger: BudgetLedger;
+  private costLedgerReady: Promise<void>;
+  private llmClient: LLMClient;
   private tierConfigs: Map<string, TierConfig>;
   private escalationMetrics: EscalationMetrics;
   private gbrainClient: GBrainClient;
@@ -98,9 +103,6 @@ export class GLearn {
       maxRetries: 3,
     });
 
-    this.patternMiner = new PatternMiner();
-    this.proposalGenerator = new ProposalGenerator();
-    this.counterfactualEvaluator = new CounterfactualEvaluator();
     this.receiptRegistry = new ReceiptRegistry('glearn');
     this.persistenceDb = new GLearnPersistenceManager();
     
@@ -108,12 +110,6 @@ export class GLearn {
       window_size: 100,
       drift_threshold: 0.2,
       alert_threshold: 0.3,
-    });
-    this.costLedger = new CostLedger({
-      budget_usd_per_hour: 10.0,
-      max_reserve_usd: 5.0,
-      auto_commit: false,
-      persistence_enabled: true,
     });
     this.latencyTracker = new LatencyTracker(1000);
     this.auditLogger = new AuditLogger('glearn');
@@ -139,6 +135,26 @@ export class GLearn {
       ['tier2', { name: 'claude-sonnet-4-6', model_id: 'anthropic/claude-sonnet-4-6', cost_per_1k_tokens_usd: 0.003, avg_latency_ms: 2000, use_case: 'Proposal generation' }],
       ['tier3', { name: 'claude-opus-4-6', model_id: 'anthropic/claude-opus-4-6', cost_per_1k_tokens_usd: 0.015, avg_latency_ms: 5000, use_case: 'Critical decisions' }],
     ]);
+
+    this.costLedger = new BudgetLedger({
+      max_budget_usd: this.multiModelConfig.cost_budget_usd_per_hour,
+      default_ttl_ms: 5 * 60 * 1000,
+      scope_caps_usd: {
+        learning_cycle: this.multiModelConfig.cost_budget_usd_per_hour,
+      },
+    }, 'glearn');
+    this.costLedgerReady = this.costLedger.init().catch(error => {
+      console.warn('[GLearn] Budget ledger initialization failed:', error);
+    });
+    this.llmClient = new LLMClient({
+      metricsPersistencePath: path.join(os.homedir(), '.glearn', 'audit', 'llm-metrics.json'),
+      onSpend: async (modelId, inputTokens, outputTokens, costUsd) => {
+        await this.recordLLMSpend(modelId, inputTokens, outputTokens, costUsd);
+      },
+    });
+    this.patternMiner = new PatternMiner(this.llmClient);
+    this.proposalGenerator = new ProposalGenerator(this.llmClient);
+    this.counterfactualEvaluator = new CounterfactualEvaluator(this.llmClient);
 
     // Initialize escalation metrics
     this.escalationMetrics = {
@@ -189,6 +205,33 @@ export class GLearn {
     return this.latencyTracker.getMetrics();
   }
 
+  private async recordLLMSpend(
+    modelId: string,
+    inputTokens: number,
+    outputTokens: number,
+    costUsd: number,
+  ): Promise<void> {
+    await this.costLedgerReady;
+    const reserveUsd = Math.max(costUsd, Number(process.env.GLEARN_LLM_CALL_RESERVE_USD || '0.01'));
+    const ttlMs = Number(process.env.GLEARN_BUDGET_RESERVATION_TTL_MS || String(5 * 60 * 1000));
+    const reservation = this.costLedger.reserve('learning_cycle_llm', reserveUsd, ttlMs, {
+      scope: 'learning_cycle',
+      resolver: 'llm',
+      model: modelId,
+    });
+
+    await this.costLedger.commit(reservation.id, costUsd, {
+      model_id: modelId,
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      operation: 'learning_cycle_llm',
+      metadata: {
+        scope: 'learning_cycle',
+        resolver: 'llm',
+      },
+    });
+  }
+
   /**
    * Run a learning cycle with multi-model escalation
    */
@@ -200,6 +243,7 @@ export class GLearn {
     const runId = uuidv4();
     const start = performance.now();
     const startTime = Date.now();
+    const runStartCostUsd = this.llmClient.getTotalCostUsd();
     let currentTier = this.multiModelConfig.default_tier;
     let escalated = false;
     let tier3Used = false;
@@ -285,7 +329,7 @@ export class GLearn {
       this.logger.info(`Learning cycle complete: ${run.patterns_found} patterns, ${run.proposals_generated} proposals`);
 
       // Generate and emit receipt
-      const receipt = await this.generateReceipt(request, run);
+      const receipt = await this.generateReceipt(request, run, this.llmClient.getTotalCostUsd() - runStartCostUsd);
       await this.receiptRegistry.append(receipt);
       
       // Store receipt in gbrain for quality control
@@ -306,7 +350,7 @@ export class GLearn {
       console.error('[GLearn] Learning cycle failed:', error);
 
       // Generate and emit receipt even on failure
-      const receipt = await this.generateReceipt(request, run);
+      const receipt = await this.generateReceipt(request, run, this.llmClient.getTotalCostUsd() - runStartCostUsd);
       await this.receiptRegistry.append(receipt);
       
       // Store receipt in gbrain for quality control
@@ -1104,7 +1148,7 @@ export class GLearn {
    * Get cost statistics
    */
   getCostStats() {
-    return this.costLedger.getStatistics();
+    return this.costLedger.getStats();
   }
 
   /**
@@ -1112,7 +1156,8 @@ export class GLearn {
    */
   private async generateReceipt(
     request: { time_range?: { start: string; end: string }; run_counterfactual?: boolean },
-    run: LearningRun
+    run: LearningRun,
+    costUsd: number = 0,
   ): Promise<ExecutionReceipt> {
     const inputHash = crypto.createHash('sha256').update(JSON.stringify(request)).digest('hex');
     const configHash = crypto.createHash('sha256').update(JSON.stringify(this.gbrainEndpoint)).digest('hex');
@@ -1137,7 +1182,7 @@ export class GLearn {
       },
       overall_score: overallScore,
       hard_gates_passed: passed,
-      cost_usd: 0,
+      cost_usd: Math.max(0, costUsd),
       errors: run.error_message ? [run.error_message] : [],
       metadata: {
         run_id: run.run_id,
@@ -1146,6 +1191,8 @@ export class GLearn {
         proposals_generated: run.proposals_generated,
         evaluations_completed: run.evaluations_completed,
         run_counterfactual: request.run_counterfactual,
+        llm_total_cost_usd: this.llmClient.getTotalCostUsd(),
+        budget_status: this.costLedger.getStatus(),
       },
     };
   }
