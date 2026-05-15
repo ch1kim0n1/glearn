@@ -217,25 +217,29 @@ program
     });
 
     const health = await glearn.healthCheck();
+    const components = Object.fromEntries(
+      health.map((check) => [check.service, check.healthy ? 'ok' : 'error'])
+    ) as Record<string, 'ok' | 'error'>;
+    const status = health.every((check) => check.healthy) ? 'healthy' : 'unhealthy';
 
     if (options.json) {
-      console.log(JSON.stringify(health, null, 2));
+      console.log(JSON.stringify({ status, components, checks: health }, null, 2));
     } else if (!options.quiet) {
       console.log(chalk.bold('GLearn Health Check'));
-      console.log(chalk.gray(`Status: ${health.status}`));
+      console.log(chalk.gray(`Status: ${status}`));
       console.log('');
       console.log('Components:');
-      console.log(`  Pattern Miner: ${health.components.pattern_miner === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
-      console.log(`  Proposal Generator: ${health.components.proposal_generator === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
-      console.log(`  Counterfactual Evaluator: ${health.components.counterfactual_evaluator === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
-      console.log(`  GBrain: ${health.components.gbrain === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
-      console.log(`  GStack: ${health.components.gstack === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
-      console.log(`  GOrchestrator: ${health.components.gorchestrator === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
-      console.log(`  GMirror: ${health.components.gmirror === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
-      console.log(`  GToM: ${health.components.gtom === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  Pattern Miner: ${components.pattern_miner === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  Proposal Generator: ${components.proposal_generator === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  Counterfactual Evaluator: ${components.counterfactual_evaluator === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  GBrain: ${components.gbrain === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  GStack: ${components.gstack === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  GOrchestrator: ${components.gorchestrator === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  GMirror: ${components.gmirror === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  GToM: ${components.gtom === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
     }
 
-    process.exit(health.status === 'healthy' ? 0 : 1);
+    process.exit(status === 'healthy' ? 0 : 1);
   });
 
 // Eval mode
@@ -365,7 +369,7 @@ program
       process.exit(0);
     } catch (error) {
       console.error(chalk.red('[GLearn] Stats failed:'), error);
-      console.log(chalk.yellow('[GLearn] Stats endpoint not implemented in MVP'));
+      console.log(chalk.yellow('[GLearn] Stats endpoint requires additional setup - see TESTING.md for implementation guidance'));
       process.exit(0);
     }
   });

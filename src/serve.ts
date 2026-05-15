@@ -40,9 +40,9 @@ async function main() {
     await healthServer.start();
     await server.start();
   } catch (error) {
-    logger.error('Failed to start GLearn', { error: error instanceof Error ? error.message : String(error) });
+    logger.error('Failed to start GLearn', error instanceof Error ? error : new Error(String(error)));
     process.exit(1);
   }
 }
 
-main().catch((error) => logger.error('Main function error', { error: error instanceof Error ? error.message : String(error) }));
+main().catch((error) => logger.error('Main function error', error instanceof Error ? error : new Error(String(error))));

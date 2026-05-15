@@ -31,6 +31,7 @@ import { DriftDetector } from '../../../shared/src/core/drift-detector.js';
 import { CostLedger } from '../../../shared/src/core/cost-ledger.js';
 import { LatencyTracker } from '../../../shared/src/core/latency-tracker.js';
 import { AuditLogger } from '../../../shared/src/core/audit-logger.js';
+import { StructuredLogger } from '../../../shared/src/observability/structured-logger.js';
 import { createPersistenceManager, type PersistenceConfig } from '../../../shared/src/core/persistence-manager.js';
 import { HealthCheckResult } from '../../../shared/src/health/health-checker.js';
 
@@ -72,6 +73,7 @@ export class GLearn {
     proposals: Proposal[];
     escalationMetrics: EscalationMetrics;
   }>>;
+  private persistenceInitialized = false;
   private logger: StructuredLogger;
 
   constructor(config: {
@@ -168,15 +170,16 @@ export class GLearn {
       'glearn',
       {
         statePath: config.statePath,
-        autoSave: true,
-        saveInterval: 60000, // Save every minute
+        autoSave: false,
       }
     );
-    
-    // Initialize persistence (async, but we don't await in constructor)
-    this.persistenceManager.init().catch(error => {
-      console.error('[GLearn] Failed to initialize persistence:', error);
-    });
+  }
+
+  private async ensurePersistenceInitialized(): Promise<void> {
+    if (!this.persistenceInitialized) {
+      await this.persistenceManager.init();
+      this.persistenceInitialized = true;
+    }
   }
 
   /**
@@ -203,7 +206,7 @@ export class GLearn {
 
     // Check budget before execution
     if (this.escalationMetrics.budget_remaining_usd < 0) {
-      this.logger.error('Budget exceeded before learning cycle execution', {
+      this.logger.error('Budget exceeded before learning cycle execution', undefined, {
         budget_remaining: this.escalationMetrics.budget_remaining_usd,
       });
       return {
@@ -289,6 +292,7 @@ export class GLearn {
       await this.storeReceiptInGBrain(receipt);
       
       // Persist patterns and proposals
+      await this.ensurePersistenceInitialized();
       await this.persistenceManager.updateState(state => ({
         ...state,
         patterns: this.patternMiner.getPatterns(),
@@ -309,6 +313,7 @@ export class GLearn {
       await this.storeReceiptInGBrain(receipt);
       
       // Persist state even on failure
+      await this.ensurePersistenceInitialized();
       await this.persistenceManager.updateState(state => ({
         ...state,
         escalationMetrics: this.escalationMetrics,
