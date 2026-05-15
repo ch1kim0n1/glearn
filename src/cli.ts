@@ -3,6 +3,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { GLearn } from './core/glearn.js';
+import { GBrainIntegrationClient } from './core/gbrain-integration.js';
 import { GLearnPersistenceManager } from './core/glearn-persistence.js';
 import type { MultiModelConfig } from './types/index.js';
 
@@ -455,22 +456,19 @@ program
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     try {
-      const response = await fetch(`${options.gbrain}/api/glearn/stats`);
-      if (!response.ok) {
-        console.error(chalk.red('[GLearn] Failed to fetch statistics'));
-        process.exit(1);
-      }
-
-      const stats = await response.json();
+      const gbrain = new GBrainIntegrationClient({
+        endpoint: options.gbrain,
+      });
+      const stats = await gbrain.getGlearnStats();
       
       if (options.json) {
         console.log(JSON.stringify(stats, null, 2));
       } else if (!options.quiet) {
         console.log(chalk.blue.bold('[GLearn] Fetching statistics'));
         console.log(chalk.green.bold('\n[GLearn] Statistics'));
-        console.log(chalk.gray(`Total cycles: ${stats.total_cycles || 0}`));
-        console.log(chalk.gray(`Patterns found: ${stats.total_patterns || 0}`));
-        console.log(chalk.gray(`Proposals generated: ${stats.total_proposals || 0}`));
+        console.log(chalk.gray(`Total cycles: ${Number(stats.total_cycles || 0)}`));
+        console.log(chalk.gray(`Patterns found: ${Number(stats.total_patterns || 0)}`));
+        console.log(chalk.gray(`Proposals generated: ${Number(stats.total_proposals || 0)}`));
       }
 
       process.exit(0);

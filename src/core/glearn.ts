@@ -29,10 +29,9 @@ import { ReceiptRegistry } from './receipt-registry.js';
 import { GLearnPersistenceManager } from './glearn-persistence.js';
 import { ExecutionReceipt } from '../types/quality-rubric.js';
 import {
-  GBrainClient,
-  GBrainClientConfig,
-  GBrainClientError,
-} from '../../../shared/src/core/gbrain-client.js';
+  GBrainIntegrationClient,
+  GBrainIntegrationMode,
+} from './gbrain-integration.js';
 import { DriftDetector, DriftResult } from '../../../shared/src/core/drift-detector.js';
 import { deriveReceiptVerdictFromDrift } from './drift-analysis.js';
 import { LatencyTracker } from '../../../shared/src/core/latency-tracker.js';
@@ -104,10 +103,7 @@ export class GLearn {
   private llmClient: LLMClient;
   private tierConfigs: Map<string, TierConfig>;
   private escalationMetrics: EscalationMetrics;
-  private gbrainClient: GBrainClient;
-  private gbrainCircuitOpen: boolean = false;
-  private gbrainCircuitOpenUntil: number = 0;
-  private readonly CIRCUIT_BREAKER_TIMEOUT_MS = 60000;
+  private gbrainClient: GBrainIntegrationClient;
   private latencyTracker: LatencyTracker;
   private auditLogger: LocalAuditLogger;
   private persistenceManager: ReturnType<typeof createPersistenceManager<{
@@ -122,6 +118,15 @@ export class GLearn {
 
   constructor(config: {
     gbrainEndpoint?: string;
+    gbrainMcpEndpoint?: string;
+    gbrainMode?: GBrainIntegrationMode;
+    gbrainAuthToken?: string;
+    gbrainTimeoutMs?: number;
+    gbrainMaxRetries?: number;
+    gbrainInitialBackoffMs?: number;
+    gbrainCircuitBreakerFailureThreshold?: number;
+    gbrainCircuitBreakerCooldownMs?: number;
+    gbrainClient?: GBrainIntegrationClient;
     gstackEndpoint?: string;
     gorchestratorEndpoint?: string;
     gmirrorEndpoint?: string;
@@ -136,10 +141,16 @@ export class GLearn {
     this.gtomEndpoint = config.gtomEndpoint || 'http://localhost:3003';
     
     const gbrainEndpoint = process.env.GBRAIN_ENDPOINT || this.gbrainEndpoint;
-    this.gbrainClient = new GBrainClient({
-      baseUrl: gbrainEndpoint,
-      timeoutMs: 30000,
-      maxRetries: 3,
+    this.gbrainClient = config.gbrainClient ?? new GBrainIntegrationClient({
+      endpoint: gbrainEndpoint,
+      mcpEndpoint: config.gbrainMcpEndpoint,
+      mode: config.gbrainMode,
+      authToken: config.gbrainAuthToken,
+      timeoutMs: config.gbrainTimeoutMs,
+      maxRetries: config.gbrainMaxRetries,
+      initialBackoffMs: config.gbrainInitialBackoffMs,
+      circuitBreakerFailureThreshold: config.gbrainCircuitBreakerFailureThreshold,
+      circuitBreakerCooldownMs: config.gbrainCircuitBreakerCooldownMs,
     });
 
     this.receiptRegistry = new ReceiptRegistry('glearn');
@@ -1055,12 +1066,16 @@ export class GLearn {
    * Fetch GBrain data
    */
   private async fetchGBrainData(timeRange?: { start: string; end: string }): Promise<GBrainData> {
-    // In production, would fetch from GBrain API
-    // For MVP, return mock data
-    return {
-      pages: [],
-      searches: [],
-    };
+    try {
+      return await this.gbrainClient.getObservationStream(timeRange);
+    } catch (error) {
+      const circuit = this.gbrainClient.getCircuitState();
+      this.logger.warn('GBrain observation stream unavailable; continuing without GBrain context', {
+        error: error instanceof Error ? error.message : String(error),
+        circuit,
+      });
+      return { pages: [], searches: [] };
+    }
   }
 
   /**
@@ -1415,23 +1430,22 @@ export class GLearn {
     // Check gbrain
     const gbrainStart = performance.now();
     try {
-      const response = await fetch(`${this.gbrainEndpoint}/health`, {
-        method: 'GET',
-        signal: AbortSignal.timeout(5000),
-      });
+      const response = await this.gbrainClient.healthCheck();
+      const healthy = response.ok === true || response.status === 'healthy' || response.status === 'ok';
       results.push({
         service: 'gbrain',
-        healthy: response.ok,
+        healthy,
         latency_ms: performance.now() - gbrainStart,
-        error: response.ok ? undefined : `HTTP ${response.status}`,
+        error: healthy ? undefined : `status=${response.status ?? 'unknown'}`,
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
+      const circuit = this.gbrainClient.getCircuitState();
       results.push({
         service: 'gbrain',
         healthy: false,
         latency_ms: performance.now() - gbrainStart,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: `${error instanceof Error ? error.message : 'Unknown error'} circuit_open=${circuit.open}`,
         timestamp: new Date().toISOString(),
       });
     }
@@ -1906,65 +1920,17 @@ export class GLearn {
    * Store receipt in gbrain quality control database
    */
   private async storeReceiptInGBrain(receipt: ExecutionReceipt): Promise<void> {
-    if (this.isGbrainCircuitOpen()) {
-      this.logger.warn('GBrain circuit breaker is open, skipping storeReceiptInGBrain');
-      return;
-    }
-
     try {
-      // Store the receipt as a page with structured metadata
-      await this.gbrainClient.restClient.createPage({
+      await this.gbrainClient.createPage({
         title: `Receipt: ${receipt.receipt_id}`,
         content: JSON.stringify(receipt, null, 2),
         tags: ['glearn', 'receipt', receipt.verdict],
       });
-      
-      this.resetGbrainCircuit();
     } catch (error) {
-      if (error instanceof GBrainClientError) {
-        this.handleGbrainError(error);
-        this.logger.error('Failed to store receipt in gbrain', error);
-      }
-    }
-  }
-
-  /**
-   * Circuit breaker: Check if GBrain circuit is open
-   */
-  private isGbrainCircuitOpen(): boolean {
-    if (this.gbrainCircuitOpen) {
-      if (Date.now() > this.gbrainCircuitOpenUntil) {
-        this.gbrainCircuitOpen = false;
-        return false;
-      }
-      return true;
-    }
-    return false;
-  }
-
-  /**
-   * Circuit breaker: Handle GBrain errors
-   */
-  private handleGbrainError(error: GBrainClientError): void {
-    if (!error.retryable) {
-      return;
-    }
-    
-    if (error.kind === 'timeout' || error.kind === 'network' || error.kind === 'server_error') {
-      this.gbrainCircuitOpen = true;
-      this.gbrainCircuitOpenUntil = Date.now() + this.CIRCUIT_BREAKER_TIMEOUT_MS;
-      this.logger.warn('GBrain circuit breaker opened', {
-        errorKind: error.kind,
-        openUntil: new Date(this.gbrainCircuitOpenUntil).toISOString()
+      this.logger.warn('Failed to store receipt in GBrain; continuing without remote receipt mirror', {
+        error: error instanceof Error ? error.message : String(error),
+        circuit: this.gbrainClient.getCircuitState(),
       });
     }
-  }
-
-  /**
-   * Circuit breaker: Reset circuit on success
-   */
-  private resetGbrainCircuit(): void {
-    this.gbrainCircuitOpen = false;
-    this.gbrainCircuitOpenUntil = 0;
   }
 }

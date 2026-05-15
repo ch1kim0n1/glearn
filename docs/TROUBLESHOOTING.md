@@ -35,6 +35,11 @@ Symptoms include circuit-breaker warnings, timeout logs, and failed health rows.
 `GBRAIN_ENDPOINT`, call `/health` directly, then rerun the learning cycle after the circuit-breaker
 window expires.
 
+For authenticated or MCP-backed GBrain deployments, also verify `GBRAIN_AUTH_TOKEN`,
+`GBRAIN_INTEGRATION_MODE`, and `GBRAIN_MCP_ENDPOINT`. GLearn continues with an empty GBrain context
+when the observation stream is unavailable, so check logs for graceful-degradation warnings if a
+learning cycle succeeds with no GBrain-derived patterns.
+
 ## MCP Contract Check Fails
 
 Run:

@@ -96,6 +96,11 @@ Common environment variables:
 | `GLEARN_LLM_CALL_RESERVE_USD` | Per-call budget reservation. |
 | `GLEARN_BUDGET_RESERVATION_TTL_MS` | Budget reservation expiration. |
 | `GBRAIN_ENDPOINT`, `GSTACK_ENDPOINT`, `GORCHESTRATOR_ENDPOINT` | Stack service endpoints. |
+| `GBRAIN_INTEGRATION_MODE` | `http` or `mcp` GBrain transport for observation and receipt integration. |
+| `GBRAIN_MCP_ENDPOINT` | Optional MCP endpoint when `GBRAIN_INTEGRATION_MODE=mcp`. |
+| `GBRAIN_AUTH_TOKEN` | Bearer token for authenticated GBrain calls. |
+| `GBRAIN_TIMEOUT_MS`, `GBRAIN_MAX_RETRIES`, `GBRAIN_BACKOFF_MS` | GBrain timeout and retry controls. |
+| `GBRAIN_CIRCUIT_FAILURES`, `GBRAIN_CIRCUIT_COOLDOWN_MS` | GBrain circuit-breaker controls. |
 | `GMIRROR_ENDPOINT`, `GTOM_ENDPOINT` | Stack service endpoints. |
 
 ## Documentation
