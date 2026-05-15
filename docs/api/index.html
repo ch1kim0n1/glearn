@@ -1,0 +1,83 @@
+<!DOCTYPE html><html class="default" lang="en"><head><meta charSet="utf-8"/><meta http-equiv="x-ua-compatible" content="IE=edge"/><title>glearn</title><meta name="description" content="Documentation for glearn"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="assets/style.css"/><link rel="stylesheet" href="assets/highlight.css"/><script defer src="assets/main.js"></script><script async src="assets/icons.js" id="tsd-icons-script"></script><script async src="assets/search.js" id="tsd-search-script"></script><script async src="assets/navigation.js" id="tsd-nav-script"></script></head><body><script>document.documentElement.dataset.theme = localStorage.getItem("tsd-theme") || "os";document.body.style.display="none";setTimeout(() => app?app.showPage():document.body.style.removeProperty("display"),500)</script><header class="tsd-page-toolbar"><div class="tsd-toolbar-contents container"><div class="table-cell" id="tsd-search" data-base="."><div class="field"><label for="tsd-search-field" class="tsd-widget tsd-toolbar-icon search no-caption"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><use href="assets/icons.svg#icon-search"></use></svg></label><input type="text" id="tsd-search-field" aria-label="Search"/></div><div class="field"><div id="tsd-toolbar-links"><a href="https://github.com/ch1kim0n1/glearn">Repository</a></div></div><ul class="results"><li class="state loading">Preparing search index...</li><li class="state failure">The search index is not available</li></ul><a href="index.html" class="title">glearn</a></div><div class="table-cell" id="tsd-widgets"><a href="#" class="tsd-widget tsd-toolbar-icon menu no-caption" data-toggle="menu" aria-label="Menu"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><use href="assets/icons.svg#icon-menu"></use></svg></a></div></div></header><div class="container container-main"><div class="col-content"><div class="tsd-page-title"><h2>glearn</h2></div><div class="tsd-panel tsd-typography"><a id="md:glearn-api-overview" class="tsd-anchor"></a><h1><a href="#md:glearn-api-overview">GLearn API Overview</a></h1><p>Regenerate the browsable TypeScript API:</p>
+<pre><code class="language-bash"><span class="hl-0">npm</span><span class="hl-1"> </span><span class="hl-2">run</span><span class="hl-1"> </span><span class="hl-2">docs:api</span>
+</code><button>Copy</button></pre>
+<p>Generated output is committed under <code>docs/api</code>.</p>
+<a id="md:cli-api" class="tsd-anchor"></a><h2><a href="#md:cli-api">CLI API</a></h2><table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Inputs</th>
+<th>Output</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>glearn run</code></td>
+<td>Optional time range, counterfactual flag, priority</td>
+<td>Learning run summary and receipt.</td>
+</tr>
+<tr>
+<td><code>glearn patterns</code></td>
+<td>Type/source filters</td>
+<td>Mined pattern list.</td>
+</tr>
+<tr>
+<td><code>glearn proposals</code></td>
+<td>Status/scope filters</td>
+<td>Proposal list.</td>
+</tr>
+<tr>
+<td><code>glearn approve &lt;id&gt;</code></td>
+<td>Proposal id and reviewer metadata</td>
+<td>Updated proposal state.</td>
+</tr>
+<tr>
+<td><code>glearn health</code></td>
+<td>Endpoint/environment config</td>
+<td>Health rows and score.</td>
+</tr>
+<tr>
+<td><code>glearn eval</code></td>
+<td>Corpus path, cycles, output path</td>
+<td>Evaluation report.</td>
+</tr>
+<tr>
+<td><code>glearn receipts</code></td>
+<td>Date and pagination filters</td>
+<td>Stored receipts.</td>
+</tr>
+<tr>
+<td><code>glearn drift</code></td>
+<td>Optional metric name</td>
+<td>Drift detector output.</td>
+</tr>
+<tr>
+<td><code>glearn cost</code></td>
+<td>Detail options</td>
+<td>Budget ledger summary.</td>
+</tr>
+<tr>
+<td><code>glearn metrics</code></td>
+<td>Format options</td>
+<td>Prometheus or JSON metrics snapshot.</td>
+</tr>
+</tbody></table>
+<a id="md:typescript-api" class="tsd-anchor"></a><h2><a href="#md:typescript-api">TypeScript API</a></h2><p>Primary classes:</p>
+<ul>
+<li><code>GLearn</code> in <code>src/core/glearn.ts</code>: learning cycles, pattern/proposal retrieval, health checks,
+receipts, drift, cost, and observability exports.</li>
+<li><code>PatternMiner</code> in <code>src/core/pattern-miner.ts</code>: data ingestion and pattern discovery.</li>
+<li><code>ProposalGenerator</code> in <code>src/core/proposal-generator.ts</code>: typed proposal creation.</li>
+<li><code>CounterfactualEvaluator</code> in <code>src/core/counterfactual.ts</code>: proposal backtesting.</li>
+<li><code>GLearnPersistenceManager</code> in <code>src/core/glearn-persistence.ts</code>: SQLite schema and state writes.</li>
+<li><code>ReceiptRegistry</code> in <code>src/core/receipt-registry.ts</code>: append-only JSONL receipt storage.</li>
+<li><code>BudgetLedger</code> in <code>src/core/budget-ledger.ts</code>: budget reservation and cost accounting.</li>
+<li><code>GLearnObservability</code> in <code>src/core/observability.ts</code>: metrics, traces, audit logs, and alerts.</li>
+</ul>
+<a id="md:learning-run-shape" class="tsd-anchor"></a><h2><a href="#md:learning-run-shape">Learning Run Shape</a></h2><pre><code class="language-ts"><span class="hl-3">type</span><span class="hl-1"> </span><span class="hl-4">LearningRun</span><span class="hl-1"> = {</span><br/><span class="hl-1">  </span><span class="hl-5">run_id</span><span class="hl-1">: </span><span class="hl-4">string</span><span class="hl-1">;</span><br/><span class="hl-1">  </span><span class="hl-5">run_type</span><span class="hl-1">: </span><span class="hl-2">&#39;pattern_mining&#39;</span><span class="hl-1"> | </span><span class="hl-4">string</span><span class="hl-1">;</span><br/><span class="hl-1">  </span><span class="hl-5">status</span><span class="hl-1">: </span><span class="hl-2">&#39;running&#39;</span><span class="hl-1"> | </span><span class="hl-2">&#39;completed&#39;</span><span class="hl-1"> | </span><span class="hl-2">&#39;failed&#39;</span><span class="hl-1">;</span><br/><span class="hl-1">  </span><span class="hl-5">patterns_found</span><span class="hl-1">: </span><span class="hl-4">number</span><span class="hl-1">;</span><br/><span class="hl-1">  </span><span class="hl-5">proposals_generated</span><span class="hl-1">: </span><span class="hl-4">number</span><span class="hl-1">;</span><br/><span class="hl-1">  </span><span class="hl-5">evaluations_completed</span><span class="hl-1">: </span><span class="hl-4">number</span><span class="hl-1">;</span><br/><span class="hl-1">  </span><span class="hl-5">started_at</span><span class="hl-1">: </span><span class="hl-4">string</span><span class="hl-1">;</span><br/><span class="hl-1">  </span><span class="hl-5">completed_at</span><span class="hl-1">?: </span><span class="hl-4">string</span><span class="hl-1">;</span><br/><span class="hl-1">  </span><span class="hl-5">error_message</span><span class="hl-1">?: </span><span class="hl-4">string</span><span class="hl-1">;</span><br/><span class="hl-1">};</span>
+</code><button>Copy</button></pre>
+<a id="md:pattern-and-proposal-contracts" class="tsd-anchor"></a><h2><a href="#md:pattern-and-proposal-contracts">Pattern And Proposal Contracts</a></h2><p>Patterns capture a repeated signal with confidence, affected tools, and supporting evidence.
+Proposals map one or more patterns to a recommended change, expected impact, confidence, and
+approval state. High-impact proposals must remain pending until a human or owning tool approves.</p>
+<a id="md:compatibility" class="tsd-anchor"></a><h2><a href="#md:compatibility">Compatibility</a></h2><p>The package follows semver. Existing CLI flags, MCP tool names, and required input fields are
+stable within a major version. New optional fields may appear in minor versions.</p>
+</div></div><div class="col-sidebar"><div class="page-menu"><div class="tsd-navigation settings"><details class="tsd-index-accordion"><summary class="tsd-accordion-summary"><h3><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><use href="assets/icons.svg#icon-chevronDown"></use></svg>Settings</h3></summary><div class="tsd-accordion-details"><div class="tsd-filter-visibility"><h4 class="uppercase">Member Visibility</h4><form><ul id="tsd-filter-options"><li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-protected" name="protected"/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Protected</span></label></li><li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-inherited" name="inherited" checked/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Inherited</span></label></li><li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-external" name="external"/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>External</span></label></li></ul></form></div><div class="tsd-theme-toggle"><h4 class="uppercase">Theme</h4><select id="tsd-theme"><option value="os">OS</option><option value="light">Light</option><option value="dark">Dark</option></select></div></div></details></div><details open class="tsd-index-accordion tsd-page-navigation"><summary class="tsd-accordion-summary"><h3><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><use href="assets/icons.svg#icon-chevronDown"></use></svg>On This Page</h3></summary><div class="tsd-accordion-details"><a href="#md:glearn-api-overview"><span>GLearn API <wbr/>Overview</span></a><ul><li><a href="#md:cli-api"><span>CLI API</span></a></li><li><a href="#md:typescript-api"><span>Type<wbr/>Script API</span></a></li><li><a href="#md:learning-run-shape"><span>Learning <wbr/>Run <wbr/>Shape</span></a></li><li><a href="#md:pattern-and-proposal-contracts"><span>Pattern <wbr/>And <wbr/>Proposal <wbr/>Contracts</span></a></li><li><a href="#md:compatibility"><span>Compatibility</span></a></li></ul></div></details></div><div class="site-menu"><nav class="tsd-navigation"><a href="index.html" class="current"><svg class="tsd-kind-icon" viewBox="0 0 24 24"><use href="assets/icons.svg#icon-1"></use></svg><span>glearn</span></a><ul class="tsd-small-nested-navigation" id="tsd-nav-container" data-base="."><li>Loading...</li></ul></nav></div></div></div><footer></footer><div class="overlay"></div></body></html>

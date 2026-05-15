@@ -1,189 +1,75 @@
 # GLearn Runbook
 
-## Overview
-GLearn is a pattern mining and optimization system that analyzes G-Stack activity to discover patterns and generate improvement proposals.
+## Daily Checks
 
-## Quick Start
-
-### Installation
 ```bash
-cd glearn
-npm install
-npm run build
+npm run verify
+node dist/cli.js health
+node dist/cli.js metrics --format prometheus
+node dist/cli.js cost
 ```
 
-### Basic Usage
+Review health score, failed learning receipts, budget state, and GBrain circuit-breaker events.
+
+## Run A Learning Cycle
+
 ```bash
-# Run a learning cycle
-glearn run
-
-# Run with counterfactual evaluation
-glearn run --counterfactual
-
-# Check health
-glearn health
+node dist/cli.js run --counterfactual --priority normal
 ```
 
-## Operations
+Expected result:
 
-### Learning Cycle
-**Command:** `glearn run [options]`
+- Data ingestion completes or degrades with structured upstream errors.
+- Patterns are mined and persisted.
+- Proposals are generated with confidence and evidence.
+- Counterfactual evaluations run when requested.
+- A receipt is appended.
+- Metrics, traces, and audit events are emitted.
 
-**Purpose:** Analyze G-Stack activity to mine patterns and generate proposals.
+## Review Proposals
 
-**Parameters:**
-- `--counterfactual`: Run counterfactual evaluation on proposals
-
-**Example:**
 ```bash
-glearn run --counterfactual
+node dist/cli.js proposals
+node dist/cli.js approve <proposal-id> --reviewer ops
+node dist/cli.js reject <proposal-id> --reviewer ops --reason "insufficient evidence"
 ```
 
-**Output Schema:**
-```json
-{
-  "cycle_id": "string",
-  "started_at": "ISO-8601",
-  "completed_at": "ISO-8601",
-  "patterns_found": 15,
-  "proposals_generated": 8,
-  "evaluations_completed": 5,
-  "status": "completed"
-}
+High-impact proposals should include baseline metrics, expected impact, and rollback criteria before
+approval.
+
+## Backup And Restore
+
+```bash
+node dist/cli.js backup ./backups/glearn-$(date +%Y%m%d)
+node dist/cli.js restore ./backups/glearn-20260515
 ```
 
-### Pattern Listing
-**Command:** `glearn patterns [options]`
+After restore, run `health`, `patterns`, and `proposals` to verify state continuity.
 
-**Purpose:** List discovered patterns from the learning cycle.
+## Release Checklist
 
-**Parameters:**
-- `--type`: Filter by pattern type
-- `--tool`: Filter by source tool
+1. `npm run verify`
+2. `npm run build`
+3. `npm run docs:api`
+4. `git diff --check`
+5. Confirm `README.md`, `CHANGELOG.md`, and generated API docs match the release.
+6. Push to `master`.
 
-### Proposal Listing
-**Command:** `glearn proposals`
+## Incident Response
 
-**Purpose:** List generated proposals for system optimization.
+| Symptom | Action |
+| --- | --- |
+| No patterns found | Check corpus size, GBrain endpoint, and data-store persistence. |
+| Proposal quality low | Review pattern confidence, baseline drift, and model-tier escalation. |
+| Counterfactual cost high | Disable counterfactual on routine cycles or lower model-tier use. |
+| GBrain writes skipped | Check circuit-breaker logs and `GBRAIN_ENDPOINT`. |
+| Receipts missing | Check receipt path permissions and disk space. |
+| Drift alerts noisy | Inspect metric windows and baseline sample size. |
 
-### Proposal Approval
-**Command:** `glearn approve <proposal-id> [options]`
+## Maintenance Cadence
 
-**Purpose:** Approve a proposal for application.
-
-**Parameters:**
-- `--reviewer`: Reviewer name (default: user)
-
-### Evaluation Mode
-**Command:** `glearn eval [options]`
-
-**Purpose:** Run evaluation on pattern mining performance.
-
-**Parameters:**
-- `-c, --corpus`: Path to test corpus JSON
-- `--cycles N`: Number of cycles for statistical comparison (default: 1)
-- `-o, --output`: Write output to file
-
-### Statistics
-**Command:** `glearn stats`
-
-**Purpose:** Show statistics from recent learning cycles.
-
-### Drift Detection
-**Command:** `glearn drift`
-
-**Purpose:** Check for pattern drift over time.
-
-## Troubleshooting
-
-### No Patterns Found
-**Symptom:** Learning cycle completes with 0 patterns
-
-**Solution:**
-- Verify GBrain has sufficient historical data
-- Check GStack, GOrchestrator, GMirror connectivity
-- Review pattern miner configuration
-
-### High Evaluation Cost
-**Symptom:** Counterfactual evaluation exceeds budget
-
-**Solution:**
-- Disable counterfactual for initial runs
-- Reduce corpus size for evaluation
-- Use faster model tiers for counterfactual
-
-### Proposal Quality Issues
-**Symptom:** Generated proposals are not actionable
-
-**Solution:**
-- Review pattern miner parameters
-- Increase proposal diversity settings
-- Provide more historical data for learning
-
-## Configuration
-
-### Learning Cycle Parameters
-```json
-{
-  "run_counterfactual": false,
-  "pattern_miner": {
-    "min_support": 0.1,
-    "min_confidence": 0.7,
-    "max_patterns": 100
-  },
-  "proposal_generator": {
-    "max_proposals": 20,
-    "diversity_threshold": 0.8
-  }
-}
-```
-
-## Integration Points
-
-### GBrain
-- Stores historical receipts and transcripts
-- Provides pattern mining data source
-- Stores approved proposals
-
-### GStack
-- Source of code review patterns
-- Provides code quality metrics
-
-### GOrchestrator
-- Source of execution patterns
-- Provides workflow optimization data
-
-### GMirror
-- Source of UX testing patterns
-- Provides user feedback data
-
-### GLearn MCP
-- Exposes run, patterns, proposals, and approval operations
-- Used by GAgent for learning in pipeline
-
-## Monitoring
-
-### Key Metrics
-- Patterns discovered per cycle
-- Proposal acceptance rate
-- Evaluation latency
-- Cost per learning cycle
-
-### Alerting Thresholds
-- Zero patterns found: Check data sources
-- Proposal acceptance < 20%: Review pattern quality
-- Cycle time > 10 minutes: Optimize pattern miner
-
-## Maintenance
-
-### Daily
-- Review recent proposals
-- Check learning cycle status
-
-### Weekly
-- Run full learning cycle with counterfactual
-- Review pattern drift
-
-### Monthly
-- Update pattern miner parameters based on results
-- Expand corpus for evaluation
+| Cadence | Work |
+| --- | --- |
+| Daily | Check health, failed receipts, and pending high-impact proposals. |
+| Weekly | Run counterfactual cycle on the regression corpus. |
+| Monthly | Review baselines, proposal acceptance rate, and pattern-miner thresholds. |
