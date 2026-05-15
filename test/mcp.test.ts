@@ -12,12 +12,28 @@ describe('GLearn MCP Server', () => {
   });
 
   it('declares the expected tool names', () => {
-    for (const tool of ['glearn_run', 'glearn_patterns', 'glearn_proposals', 'glearn_approve', 'glearn_health']) {
+    for (const tool of [
+      'glearn_run',
+      'glearn_patterns',
+      'glearn_get_patterns',
+      'glearn_proposals',
+      'glearn_get_proposals',
+      'glearn_approve',
+      'glearn_health',
+      'glearn_get_drift',
+    ]) {
       expect(serverSource).toContain(tool);
     }
   });
 
   it('declares required schemas for proposal approval', () => {
     expect(serverSource).toContain("required: ['proposal_id']");
+  });
+
+  it('enforces token auth, read/write scopes, and rate limits for MCP calls', () => {
+    expect(serverSource).toContain('requiredScopeForTool');
+    expect(serverSource).toContain('Insufficient permissions: requires');
+    expect(serverSource).toContain('Rate limit exceeded');
+    expect(serverSource).toContain('GLEARN_MCP_TOKEN');
   });
 });

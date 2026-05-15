@@ -5,8 +5,21 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { GLearn } from '../core/glearn.js';
-import { createAuthMiddleware } from '../../../shared/src/core/token-auth.js';
-import { AuthRateLimiter } from '../../../shared/src/core/auth-rate-limit.js';
+import { createAuthMiddleware, type AuthConfig, type AuthToken } from '../../../shared/src/core/token-auth.js';
+
+type McpScope = 'read' | 'write';
+
+interface IssuedToken {
+  scopes: McpScope[];
+  expiresAt: number;
+}
+
+interface RateWindow {
+  minuteCount: number;
+  minuteStart: number;
+  hourCount: number;
+  hourStart: number;
+}
 
 /**
  * MCP Server for GLearn
@@ -16,10 +29,18 @@ import { AuthRateLimiter } from '../../../shared/src/core/auth-rate-limit.js';
 class GLearnMCPServer {
   private server: Server;
   private glearn: GLearn;
-  private authMiddleware: any;
-  private rateLimiter!: AuthRateLimiter;
+  private authMiddleware: ReturnType<typeof createAuthMiddleware>;
+  private issuedTokens = new Map<string, IssuedToken>();
+  private rateWindows = new Map<string, RateWindow>();
+  private requireAuth: boolean;
+  private allowAnonymousRead: boolean;
+  private defaultScopes: McpScope[];
+  private rateLimitRpm: number;
+  private rateLimitRph: number;
+  private bootstrapToken?: string;
+  private bootstrapScopes: McpScope[];
 
-  constructor() {
+  constructor(authConfig?: AuthConfig) {
     this.server = new Server(
       {
         name: 'glearn',
@@ -34,13 +55,20 @@ class GLearnMCPServer {
 
     this.glearn = new GLearn();
 
-    // Initialize authentication middleware
-    const authSecret = process.env.GLEARN_AUTH_SECRET || 'dev-secret-key';
-    this.authMiddleware = createAuthMiddleware({
-      secret: authSecret,
+    const env = typeof process !== 'undefined' ? process.env : {};
+    this.requireAuth = env.GLEARN_REQUIRE_AUTH === 'true';
+    this.allowAnonymousRead = env.GLEARN_ALLOW_ANONYMOUS_READ !== 'false';
+    this.defaultScopes = this.parseScopes(env.GLEARN_MCP_DEFAULT_SCOPES || 'read,write');
+    this.bootstrapToken = env.GLEARN_MCP_TOKEN;
+    this.bootstrapScopes = this.parseScopes(env.GLEARN_MCP_TOKEN_SCOPES || 'read,write');
+
+    this.authMiddleware = createAuthMiddleware(authConfig || {
+      secret: env.GLEARN_AUTH_SECRET || 'dev-secret-key',
       tool: 'glearn',
-      defaultRoles: ['read', 'write'],
+      defaultRoles: this.defaultScopes,
     });
+    this.rateLimitRpm = this.parseLimit(env.GLEARN_RATE_LIMIT_RPM, 60);
+    this.rateLimitRph = this.parseLimit(env.GLEARN_RATE_LIMIT_RPH, 1000);
 
     this.setupHandlers();
   }
@@ -84,8 +112,35 @@ class GLearnMCPServer {
             },
           },
           {
+            name: 'glearn_get_patterns',
+            description: 'Get discovered patterns from the learning cycle',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                type: {
+                  type: 'string',
+                  description: 'Filter by pattern type',
+                },
+                tool: {
+                  type: 'string',
+                  description: 'Filter by source tool',
+                },
+              },
+              required: [],
+            },
+          },
+          {
             name: 'glearn_proposals',
             description: 'List generated proposals for system optimization',
+            inputSchema: {
+              type: 'object',
+              properties: {},
+              required: [],
+            },
+          },
+          {
+            name: 'glearn_get_proposals',
+            description: 'Get generated proposals for system optimization',
             inputSchema: {
               type: 'object',
               properties: {},
@@ -170,27 +225,18 @@ class GLearnMCPServer {
       };
     });
 
-    // Handle tool calls
+    // Handle tool calls with token auth, read/write scopes, and per-token rate limits.
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
+      const requiredScope = this.requiredScopeForTool(name);
+      const auth = this.authorize(request.params._meta, requiredScope);
+      if (!auth.ok) {
+        return this.errorResponse(auth.error);
+      }
 
-      // Authentication check (for MVP, this is a no-op since stdio servers authenticate at process level)
-      // In production with HTTP transport, this would validate the Authorization header
-      const authHeaderRaw = request.params._meta?.authorization;
-      const authHeader = typeof authHeaderRaw === "string" ? authHeaderRaw : "";
-      if (authHeader) {
-        const auth = this.authMiddleware.authenticate(authHeader);
-        if (!auth.success) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Authentication failed: ${auth.error}`,
-              },
-            ],
-            isError: true,
-          };
-        }
+      const rateLimit = this.checkRateLimit(auth.token);
+      if (!rateLimit.allowed) {
+        return this.errorResponse(`Rate limit exceeded. Reset at ${rateLimit.resetAt}`);
       }
 
       try {
@@ -198,8 +244,10 @@ class GLearnMCPServer {
           case 'glearn_run':
             return await this.handleRun(args as any);
           case 'glearn_patterns':
+          case 'glearn_get_patterns':
             return await this.handlePatterns(args as any);
           case 'glearn_proposals':
+          case 'glearn_get_proposals':
             return await this.handleProposals();
           case 'glearn_approve':
             return await this.handleApprove(args as any);
@@ -215,17 +263,113 @@ class GLearnMCPServer {
             throw new Error(`Unknown tool: ${name}`);
         }
       } catch (error) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Error: ${error instanceof Error ? error.message : String(error)}`,
-            },
-          ],
-          isError: true,
-        };
+        return this.errorResponse(`Error: ${error instanceof Error ? error.message : String(error)}`);
       }
     });
+  }
+
+  generateToken(customRoles?: string[]): AuthToken {
+    const token = this.authMiddleware.getAuth().generateToken(customRoles);
+    this.issuedTokens.set(token.token, {
+      scopes: this.parseScopes(token.roles.join(',')),
+      expiresAt: new Date(token.expiresAt).getTime(),
+    });
+    return token;
+  }
+
+  private authorize(meta: Record<string, unknown> | undefined, requiredScope: McpScope) {
+    const authHeaderRaw = meta?.authorization;
+    const authHeader = typeof authHeaderRaw === 'string' ? authHeaderRaw : '';
+
+    if (!authHeader) {
+      if (!this.requireAuth && requiredScope === 'read' && this.allowAnonymousRead) {
+        return { ok: true as const, token: 'anonymous-read' };
+      }
+      return { ok: false as const, error: `Authentication failed: missing bearer token for ${requiredScope} scope` };
+    }
+
+    const auth = this.authMiddleware.authenticate(authHeader);
+    if (!auth.success) {
+      return { ok: false as const, error: `Authentication failed: ${auth.error}` };
+    }
+
+    const token = authHeader.replace(/^Bearer\s+/i, '');
+    const scopes = this.scopesForToken(token, auth.token?.roles || []);
+    if (!scopes.includes(requiredScope)) {
+      return { ok: false as const, error: `Insufficient permissions: requires ${requiredScope} scope` };
+    }
+
+    return { ok: true as const, token };
+  }
+
+  private scopesForToken(token: string, fallbackRoles: string[]): McpScope[] {
+    const issued = this.issuedTokens.get(token);
+    if (issued && issued.expiresAt >= Date.now()) {
+      return issued.scopes;
+    }
+    if (this.bootstrapToken && token === this.bootstrapToken) {
+      return this.bootstrapScopes;
+    }
+    if (this.bootstrapToken) {
+      return [];
+    }
+    return this.parseScopes(fallbackRoles.join(','));
+  }
+
+  private requiredScopeForTool(name: string): McpScope {
+    const writeTools = new Set(['glearn_run', 'glearn_approve']);
+    return writeTools.has(name) ? 'write' : 'read';
+  }
+
+  private checkRateLimit(token: string) {
+    const now = Date.now();
+    const minuteMs = 60 * 1000;
+    const hourMs = 60 * 60 * 1000;
+    let window = this.rateWindows.get(token);
+    if (!window) {
+      window = { minuteCount: 0, minuteStart: now, hourCount: 0, hourStart: now };
+      this.rateWindows.set(token, window);
+    }
+    if (now - window.minuteStart >= minuteMs) {
+      window.minuteStart = now;
+      window.minuteCount = 0;
+    }
+    if (now - window.hourStart >= hourMs) {
+      window.hourStart = now;
+      window.hourCount = 0;
+    }
+    if (window.minuteCount >= this.rateLimitRpm || window.hourCount >= this.rateLimitRph) {
+      const resetAt = new Date(Math.min(window.minuteStart + minuteMs, window.hourStart + hourMs)).toISOString();
+      return { allowed: false, resetAt };
+    }
+    window.minuteCount++;
+    window.hourCount++;
+    return { allowed: true, resetAt: new Date(window.minuteStart + minuteMs).toISOString() };
+  }
+
+  private parseScopes(value: string): McpScope[] {
+    const scopes = value
+      .split(',')
+      .map(scope => scope.trim())
+      .filter((scope): scope is McpScope => scope === 'read' || scope === 'write');
+    return scopes.length > 0 ? scopes : ['read'];
+  }
+
+  private parseLimit(value: string | undefined, fallback: number): number {
+    const parsed = Number.parseInt(value || '', 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  }
+
+  private errorResponse(text: string) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text,
+        },
+      ],
+      isError: true,
+    };
   }
 
   private async handleRun(args: {
@@ -258,7 +402,7 @@ class GLearnMCPServer {
   private async handlePatterns(args: {
     type?: string;
     tool?: string;
-  }) {
+  } = {}) {
     const patterns = this.glearn.getPatterns();
     
     let filtered = patterns;
@@ -281,7 +425,7 @@ class GLearnMCPServer {
 
   private async handleProposals() {
     const patterns = this.glearn.getPatterns();
-    const proposals = this.glearn.getProposals(patterns);
+    const proposals = await this.glearn.getProposals(patterns);
 
     return {
       content: [
@@ -330,7 +474,7 @@ class GLearnMCPServer {
     offset?: number;
     startDate?: string;
     endDate?: string;
-  }) {
+  } = {}) {
     const receipts = await this.glearn.getReceipts(args);
     return {
       content: [
@@ -344,7 +488,7 @@ class GLearnMCPServer {
 
   private async handleGetDrift(args: {
     metricName?: string;
-  }) {
+  } = {}) {
     const drift = await this.glearn.getDrift(args.metricName);
     return {
       content: [
