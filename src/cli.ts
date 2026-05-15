@@ -3,6 +3,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { GLearn } from './core/glearn.js';
+import type { MultiModelConfig } from './types/index.js';
 
 const program = new Command();
 
@@ -16,6 +17,8 @@ program
   .command('run')
   .description('Run a learning cycle to mine patterns and generate proposals')
   .option('--counterfactual', 'Run counterfactual evaluation on proposals')
+  .option('--cycles <number>', 'Number of learning cycles to run', '1')
+  .option('--budget-usd <amount>', 'Maximum learning budget in USD', '10')
   .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
   .option('--gstack <url>', 'GStack endpoint', 'http://localhost:3001')
   .option('--gorchestrator <url>', 'GOrchestrator endpoint', 'http://localhost:3001')
@@ -30,46 +33,79 @@ program
       process.exit(1);
     }
 
+    const cycles = parsePositiveInteger(options.cycles, '--cycles', 1, 100);
+    const budgetUsd = parsePositiveNumber(options.budgetUsd, '--budget-usd');
+    const multiModelConfig = buildMultiModelConfig(budgetUsd);
     const glearn = new GLearn({
       gbrainEndpoint: options.gbrain,
       gstackEndpoint: options.gstack,
       gorchestratorEndpoint: options.gorchestrator,
       gmirrorEndpoint: options.gmirror,
       gtomEndpoint: options.gtom,
+      multiModelConfig,
     });
 
     try {
-      const result = await glearn.runLearningCycle({
-        run_counterfactual: options.counterfactual,
-      });
+      const cycleResults = [];
+      if (!options.quiet && !options.json) {
+        console.log(chalk.blue.bold('[GLearn] Starting learning cycle'));
+        console.log(chalk.gray(`Counterfactual evaluation: ${options.counterfactual}`));
+        console.log(chalk.gray(`Cycles: ${cycles}`));
+        console.log(chalk.gray(`Budget: $${budgetUsd.toFixed(2)}`));
+      }
 
-      const output = {
-        status: result.status,
-        patterns_found: result.patterns_found,
-        proposals_generated: result.proposals_generated,
-        evaluations_completed: result.evaluations_completed,
-        duration_ms: result.completed_at ? new Date(result.completed_at).getTime() - new Date(result.started_at).getTime() : 0,
-        error_message: result.error_message,
+      for (let cycle = 0; cycle < cycles; cycle++) {
+        if (cycles > 1 && !options.quiet && !options.json) {
+          console.log(chalk.gray(`Cycle ${cycle + 1}/${cycles}`));
+        }
+        const result = await glearn.runLearningCycle({
+          run_counterfactual: options.counterfactual,
+        });
+        cycleResults.push({
+          cycle: cycle + 1,
+          status: result.status,
+          patterns_found: result.patterns_found,
+          proposals_generated: result.proposals_generated,
+          evaluations_completed: result.evaluations_completed,
+          duration_ms: result.completed_at ? new Date(result.completed_at).getTime() - new Date(result.started_at).getTime() : 0,
+          error_message: result.error_message,
+        });
+      }
+
+      const completed = cycleResults.filter(result => result.status === 'completed').length;
+      const output = cycles === 1 ? cycleResults[0] : {
+        cycles,
+        budget_usd: budgetUsd,
+        completed,
+        failed: cycleResults.length - completed,
+        avg_patterns_found: cycleResults.reduce((sum, r) => sum + r.patterns_found, 0) / cycleResults.length,
+        avg_proposals_generated: cycleResults.reduce((sum, r) => sum + r.proposals_generated, 0) / cycleResults.length,
+        avg_evaluations_completed: cycleResults.reduce((sum, r) => sum + r.evaluations_completed, 0) / cycleResults.length,
+        avg_duration_ms: cycleResults.reduce((sum, r) => sum + r.duration_ms, 0) / cycleResults.length,
+        results: cycleResults,
       };
+      const latest = cycleResults[cycleResults.length - 1];
 
       if (options.json) {
         console.log(JSON.stringify(output, null, 2));
       } else if (!options.quiet) {
-        console.log(chalk.blue.bold('[GLearn] Starting learning cycle'));
-        console.log(chalk.gray(`Counterfactual evaluation: ${options.counterfactual}`));
         console.log(chalk.green.bold('\n[GLearn] Learning cycle completed'));
-        console.log(chalk.gray(`Status: ${result.status}`));
-        console.log(chalk.gray(`Patterns found: ${result.patterns_found}`));
-        console.log(chalk.gray(`Proposals generated: ${result.proposals_generated}`));
-        console.log(chalk.gray(`Evaluations completed: ${result.evaluations_completed}`));
-        console.log(chalk.gray(`Duration: ${output.duration_ms}ms`));
+        console.log(chalk.gray(`Status: ${latest.status}`));
+        console.log(chalk.gray(`Patterns found: ${latest.patterns_found}`));
+        console.log(chalk.gray(`Proposals generated: ${latest.proposals_generated}`));
+        console.log(chalk.gray(`Evaluations completed: ${latest.evaluations_completed}`));
+        console.log(chalk.gray(`Duration: ${latest.duration_ms}ms`));
 
-        if (result.status === 'failed') {
-          console.log(chalk.red(`Error: ${result.error_message}`));
+        if (cycles > 1) {
+          console.log(chalk.gray(`Completed cycles: ${completed}/${cycles}`));
+        }
+
+        if (latest.status === 'failed') {
+          console.log(chalk.red(`Error: ${latest.error_message}`));
         }
       }
 
-      process.exit(result.status === 'completed' ? 0 : 1);
+      process.exit(completed === cycleResults.length ? 0 : 1);
     } catch (error) {
       console.error(chalk.red('[GLearn] Learning cycle failed:'), error);
       process.exit(1);
@@ -250,6 +286,7 @@ program
   .option('-c, --corpus <path>', 'Path to test corpus JSON')
   .option('--against <receipt>', 'Receipt path or ID to compare against in regress mode')
   .option('--cycles <number>', 'Number of cycles to run for statistical comparison', '1')
+  .option('--budget-usd <amount>', 'Maximum learning budget in USD', '10')
   .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
   .option('--gstack <url>', 'GStack endpoint', 'http://localhost:3001')
   .option('--gorchestrator <url>', 'GOrchestrator endpoint', 'http://localhost:3001')
@@ -264,12 +301,14 @@ program
       return;
     }
 
+    const budgetUsd = parsePositiveNumber(options.budgetUsd, '--budget-usd');
     const glearn = new GLearn({
       gbrainEndpoint: options.gbrain,
       gstackEndpoint: options.gstack,
       gorchestratorEndpoint: options.gorchestrator,
       gmirrorEndpoint: options.gmirror,
       gtomEndpoint: options.gtom,
+      multiModelConfig: buildMultiModelConfig(budgetUsd),
     });
 
     try {
@@ -278,14 +317,14 @@ program
         process.exit(1);
       }
 
-      const cycles = parseInt(options.cycles);
+      const cycles = parsePositiveInteger(options.cycles, '--cycles', 1, 100);
       const fs = await import('fs/promises');
       const corpusContent = await fs.readFile(options.corpus, 'utf-8');
       const corpus = JSON.parse(corpusContent);
 
       const allResults = [];
       for (let cycle = 0; cycle < cycles; cycle++) {
-        if (!options.quiet) {
+        if (!options.quiet && !options.json) {
           console.log(chalk.gray(`Cycle ${cycle + 1}/${cycles}`));
         }
         const result = await glearn.runLearningCycle({
@@ -304,6 +343,7 @@ program
       // Calculate statistical summary
       const summary = {
         cycles: cycles,
+        budget_usd: budgetUsd,
         corpus_size: corpus.length,
         avg_patterns_found: allResults.reduce((sum, r) => sum + r.patterns_found, 0) / allResults.length,
         avg_proposals_generated: allResults.reduce((sum, r) => sum + r.proposals_generated, 0) / allResults.length,
@@ -325,6 +365,7 @@ program
           console.log(chalk.blue.bold('[GLearn] Running evaluation'));
           console.log(chalk.green.bold('\n[GLearn] Evaluation completed'));
           console.log(chalk.gray(`Cycles: ${summary.cycles}`));
+          console.log(chalk.gray(`Budget: $${summary.budget_usd.toFixed(2)}`));
           console.log(chalk.gray(`Avg patterns found: ${summary.avg_patterns_found.toFixed(2)}`));
           console.log(chalk.gray(`Avg proposals generated: ${summary.avg_proposals_generated.toFixed(2)}`));
           console.log(chalk.gray(`Avg evaluations completed: ${summary.avg_evaluations_completed.toFixed(2)}`));
@@ -520,6 +561,7 @@ program
   .option('--until <date>', 'Only include receipts up to YYYY-MM-DD')
   .option('--limit <n>', 'Maximum number of receipts to print', '50')
   .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     try {
       const { ReceiptRegistry } = await import('./core/receipt-registry.js');
@@ -540,7 +582,7 @@ program
       const receipts = (await receiptRegistry.getAllBetween(start, end)).slice(-limit);
       if (options.json) {
         console.log(JSON.stringify(receipts, null, 2));
-      } else {
+      } else if (!options.quiet) {
         for (const receipt of receipts) {
           console.log(`${receipt.timestamp} ${receipt.receipt_id} ${receipt.verdict} score=${receipt.overall_score.toFixed(3)} corpus=${receipt.metadata?.corpus_sha8 || receipt.input_hash.substring(0, 8)}`);
         }
@@ -556,6 +598,7 @@ program
   .command('diff <receiptA> <receiptB>')
   .description('Diff two execution receipts')
   .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
   .action(async (receiptA, receiptB, options) => {
     try {
       const { ReceiptRegistry } = await import('./core/receipt-registry.js');
@@ -570,7 +613,7 @@ program
       const diff = receiptRegistry.diff(a, b);
       if (options.json) {
         console.log(JSON.stringify(diff, null, 2));
-      } else {
+      } else if (!options.quiet) {
         console.log(chalk.blue.bold('[GLearn] Receipt Diff'));
         console.log(`  Verdict: ${diff.verdict.from} -> ${diff.verdict.to}`);
         console.log(`  Overall score: ${diff.overall_score.from} -> ${diff.overall_score.to} (${diff.overall_score.delta >= 0 ? '+' : ''}${diff.overall_score.delta.toFixed(3)})`);
@@ -590,6 +633,7 @@ program
   .option('-b, --baseline <path>', 'Path to baseline file')
   .option('-c, --corpus <path>', 'Path to test corpus JSON')
   .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--budget-usd <amount>', 'Maximum learning budget in USD', '10')
   .option('--tolerance <number>', 'Tolerance for regression detection', '0.05')
   .option('--baseline-file <path>', 'Versioned JSONL baseline file for per-dimension regression gates', 'glearn/test/baselines/regression-baselines.jsonl')
   .option('--against <receipt>', 'Compare latest receipt against a baseline receipt path or ID')
@@ -647,6 +691,7 @@ program
 
       const glearn = new GLearn({
         gbrainEndpoint: options.gbrain,
+        multiModelConfig: buildMultiModelConfig(parsePositiveNumber(options.budgetUsd, '--budget-usd')),
       });
 
       // Run current performance on corpus
@@ -722,6 +767,7 @@ program
   .option('--by-model', 'Break down by model')
   .option('--by-operation', 'Break down by operation')
   .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     try {
       const { BudgetLedger } = await import('./core/budget-ledger.js');
@@ -746,7 +792,7 @@ program
           breakdown['by_operation'] = ledger.getSpendByOperation();
         }
         console.log(JSON.stringify({ spend, ...breakdown }, null, 2));
-      } else {
+      } else if (!options.quiet) {
         const period = options.week ? 'this week' : options.month ? 'this month' : 'today';
         console.log(chalk.blue(`LLM Spend ${period}: $${spend.toFixed(4)}`));
         
@@ -850,6 +896,27 @@ program
     }
   });
 
+program
+  .command('completion')
+  .description('Print shell completion script')
+  .argument('[shell]', 'Shell type: bash, zsh, or fish', 'bash')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action((shell, options) => {
+    const normalized = String(shell).toLowerCase();
+    const script = buildCompletionScript(normalized);
+    if (!script) {
+      console.error(chalk.red('[GLearn] Shell must be one of: bash, zsh, fish'));
+      process.exit(1);
+    }
+    if (options.json) {
+      console.log(JSON.stringify({ shell: normalized, script }, null, 2));
+    } else if (!options.quiet) {
+      console.log(script);
+    }
+    process.exit(0);
+  });
+
 async function runReceiptRegression(against: string | undefined, options: any): Promise<void> {
   if (!against) {
     console.error(chalk.red('[GLearn] --against is required for receipt regression'));
@@ -893,6 +960,102 @@ async function runReceiptRegression(against: string | undefined, options: any): 
   }
 
   process.exit(regressionPassed ? 0 : 1);
+}
+
+function parsePositiveInteger(value: string, flag: string, min: number, max: number): number {
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed) || parsed < min || parsed > max) {
+    console.error(chalk.red(`[GLearn] ${flag} must be an integer between ${min} and ${max}`));
+    process.exit(1);
+  }
+  return parsed;
+}
+
+function parsePositiveNumber(value: string, flag: string): number {
+  const parsed = Number.parseFloat(value);
+  if (Number.isNaN(parsed) || parsed <= 0) {
+    console.error(chalk.red(`[GLearn] ${flag} must be a positive number`));
+    process.exit(1);
+  }
+  return parsed;
+}
+
+function buildMultiModelConfig(budgetUsd: number): MultiModelConfig {
+  return {
+    default_tier: 'tier1',
+    escalation_enabled: true,
+    escalation_triggers: {
+      min_confidence: 0.7,
+      min_quality_score: 0.5,
+      max_ambiguity: 0.5,
+    },
+    consensus_threshold: 0.8,
+    cost_budget_usd_per_hour: budgetUsd,
+    allow_tier3: true,
+  };
+}
+
+function buildCompletionScript(shell: string): string | null {
+  const commands = [
+    'run',
+    'patterns',
+    'proposals',
+    'approve',
+    'reject',
+    'health',
+    'eval',
+    'stats',
+    'drift',
+    'replay',
+    'receipts',
+    'diff',
+    'regress',
+    'cost',
+    'trend',
+    'completion',
+  ];
+  const options = [
+    '--help',
+    '--version',
+    '--json',
+    '--quiet',
+    '--cycles',
+    '--budget-usd',
+    '--gbrain',
+    '--gstack',
+    '--gorchestrator',
+    '--gmirror',
+    '--gtom',
+    '--output',
+    '--corpus',
+    '--against',
+  ];
+  const words = [...commands, ...options].join(' ');
+
+  if (shell === 'bash') {
+    return `_glearn_completions()
+{
+  local cur
+  COMPREPLY=()
+  cur="\${COMP_WORDS[COMP_CWORD]}"
+  COMPREPLY=( $(compgen -W "${words}" -- "$cur") )
+}
+complete -F _glearn_completions glearn`;
+  }
+
+  if (shell === 'zsh') {
+    return `#compdef glearn
+_arguments '1:command:(${commands.join(' ')})' '*::option:(${options.join(' ')})'`;
+  }
+
+  if (shell === 'fish') {
+    return [
+      ...commands.map(command => `complete -c glearn -f -a ${command}`),
+      ...options.map(option => `complete -c glearn -f -l ${option.slice(2)}`),
+    ].join('\n');
+  }
+
+  return null;
 }
 
 program.parse();
