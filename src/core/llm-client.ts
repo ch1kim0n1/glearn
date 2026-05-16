@@ -13,7 +13,7 @@ import OpenAI from 'openai';
 import { encoding_for_model, get_encoding, TiktokenModel } from 'tiktoken';
 import * as fs from 'fs';
 import * as path from 'path';
-import { createLogger } from '../../../shared/src/core/structured-logger.js';
+import { createLogger } from '@gstack/shared/core';
 import { coreLogger } from './observability.js';
 
 export interface ModelPricing {

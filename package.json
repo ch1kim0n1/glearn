@@ -2,8 +2,31 @@
   "name": "glearn",
   "version": "0.1.0",
   "description": "Meta-learning and reflective layer for the G-Stack",
+  "main": "./dist/core/index.js",
+  "types": "./dist/core/index.d.ts",
   "bin": {
     "glearn": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js",
+      "require": "./dist/core/index.js"
+    },
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "import": "./dist/cli.js",
+      "require": "./dist/cli.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc",
@@ -35,6 +58,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
+    "@gstack/shared": "^0.1.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@types/pg": "^8.20.0",
     "better-sqlite3": "^12.10.0",

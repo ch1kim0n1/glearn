@@ -6,7 +6,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { GLearn } from '../core/glearn.js';
 import { LocalAuditLogger, coreLogger } from '../core/observability.js';
-import { createAuthMiddleware, type AuthConfig, type AuthToken } from '../../../shared/src/core/token-auth.js';
+import { createAuthMiddleware, type AuthConfig, type AuthToken } from '@gstack/shared/core';
 import { getDefaultSecretManager, PermissionModel } from '../core/security.js';
 
 type McpScope = 'read' | 'write';
