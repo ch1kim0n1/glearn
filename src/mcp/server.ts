@@ -547,8 +547,7 @@ class GLearnMCPServer {
 }
 
 // Start server if run directly
-// @ts-ignore - CommonJS compatibility
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (require.main === module) {
   const server = new GLearnMCPServer();
   server.start().catch((error) => coreLogger.error('GLearn MCP Server failed', error instanceof Error ? error : { error: String(error) }));
 }
