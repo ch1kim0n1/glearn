@@ -38,6 +38,7 @@ import { LatencyTracker } from '../../../shared/src/core/latency-tracker.js';
 import { createPersistenceManager, type PersistenceConfig } from '../../../shared/src/core/persistence-manager.js';
 import { HealthCheckResult } from '../../../shared/src/health/health-checker.js';
 import { GLearnObservability, LocalAuditLogger, LocalLogger } from './observability.js';
+import { getDefaultSecretManager } from './security.js';
 
 interface PatternConsensusVote {
   tier: ModelTier;
@@ -199,7 +200,10 @@ export class GLearn {
         error: error instanceof Error ? error.message : String(error),
       });
     });
+    const secrets = getDefaultSecretManager();
     this.llmClient = new LLMClient({
+      anthropicApiKey: secrets.get('anthropic_api_key'),
+      openaiApiKey: secrets.get('openai_api_key'),
       metricsPersistencePath: path.join(os.homedir(), '.glearn', 'audit', 'llm-metrics.json'),
       onSpend: async (modelId, inputTokens, outputTokens, costUsd) => {
         await this.recordLLMSpend(modelId, inputTokens, outputTokens, costUsd);
@@ -1587,10 +1591,13 @@ export class GLearn {
 
   private async checkLLMApiHealth(): Promise<HealthCheckResult> {
     const start = performance.now();
+    const secrets = getDefaultSecretManager();
+    const anthropicApiKey = secrets.get('anthropic_api_key');
+    const openaiApiKey = secrets.get('openai_api_key');
     try {
-      if (process.env.ANTHROPIC_API_KEY) {
+      if (anthropicApiKey) {
         const Anthropic = (await import('@anthropic-ai/sdk')).default;
-        const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+        const client = new Anthropic({ apiKey: anthropicApiKey });
         const response = await client.messages.create({
           model: 'claude-haiku-4-5-20251001',
           max_tokens: 1,
@@ -1598,9 +1605,9 @@ export class GLearn {
         });
         return this.result('llm_api', Boolean(response.id), start);
       }
-      if (process.env.OPENAI_API_KEY) {
+      if (openaiApiKey) {
         const OpenAI = (await import('openai')).default;
-        const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        const client = new OpenAI({ apiKey: openaiApiKey });
         const response = await client.chat.completions.create({
           model: 'gpt-4o-mini',
           max_tokens: 1,

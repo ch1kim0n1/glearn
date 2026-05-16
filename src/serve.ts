@@ -1,6 +1,6 @@
 import { GLearnMCPServer } from './mcp/server.js';
-import { HealthServer, type HealthCheckResult, type ReadinessCheckResult } from '../../shared/src/core/health-server.js';
 import { LocalLogger, type LogLevel } from './core/observability.js';
+import { SecureHealthServer } from './core/public-health-server.js';
 
 const HEALTH_PORT = process.env.HEALTH_PORT ? parseInt(process.env.HEALTH_PORT, 10) : 8080;
 const logger = new LocalLogger('glearn-serve', (process.env.GLEARN_LOG_LEVEL as LogLevel) || 'INFO');
@@ -9,12 +9,12 @@ async function main() {
   const server = new GLearnMCPServer();
 
   // Create health server
-  const healthServer = new HealthServer(
-    async (): Promise<HealthCheckResult> => ({
+  const healthServer = new SecureHealthServer(
+    async () => ({
       status: 'healthy',
       timestamp: new Date().toISOString(),
     }),
-    async (): Promise<ReadinessCheckResult> => ({
+    async () => ({
       status: 'healthy',
       timestamp: new Date().toISOString(),
       dependencies: {},

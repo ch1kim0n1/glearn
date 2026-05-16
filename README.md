@@ -50,6 +50,7 @@ npm run docs:api
 | `glearn replay`, `receipts`, `diff` | Inspect and compare execution evidence. |
 | `glearn cost`, `metrics` | Inspect budget ledger and observability exports. |
 | `glearn backup`, `restore`, `export` | Manage durable state. |
+| `glearn secrets list`, `secrets rotate` | Inspect secret metadata and rotate local secrets without printing values. |
 
 `glearn sync --incremental` emits gstack-compatible stage results, registers each stack
 tool as a federated GBrain source with a `pathhash8` ID, and writes a `.gbrain-source`
@@ -98,7 +99,12 @@ Common environment variables:
 | `GLEARN_DB_PATH` | Override the SQLite database path. |
 | `GLEARN_STATE_PATH` | Override JSON state persistence path. |
 | `GLEARN_AUDIT_DIR` | Override local audit log directory. |
+| `GLEARN_SECRET_DIR` | Override the file-backed secret manager directory. |
+| `GLEARN_PERMISSIONS_FILE` | JSON token-hash permission grant file for MCP callers. |
 | `GLEARN_METRICS_PATH` | Override persisted LLM metrics path. |
+| `GLEARN_RATE_LIMIT_RPM`, `GLEARN_RATE_LIMIT_RPH` | MCP per-token request limits. |
+| `GLEARN_HEALTH_RATE_LIMIT_RPM` | Public health endpoint per-client request limit. |
+| `GLEARN_HEALTH_SHUTDOWN_TOKEN` | Legacy fallback for the health shutdown secret. |
 | `GLEARN_HEALTH_WEBHOOK_URL` | Send health-drop webhook notifications. |
 | `GLEARN_LLM_CALL_RESERVE_USD` | Per-call budget reservation. |
 | `GLEARN_BUDGET_RESERVATION_TTL_MS` | Budget reservation expiration. |

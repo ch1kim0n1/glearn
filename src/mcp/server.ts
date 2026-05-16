@@ -5,8 +5,9 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { GLearn } from '../core/glearn.js';
-import { coreLogger } from '../core/observability.js';
+import { LocalAuditLogger, coreLogger } from '../core/observability.js';
 import { createAuthMiddleware, type AuthConfig, type AuthToken } from '../../../shared/src/core/token-auth.js';
+import { getDefaultSecretManager, PermissionModel } from '../core/security.js';
 
 type McpScope = 'read' | 'write';
 
@@ -40,6 +41,8 @@ class GLearnMCPServer {
   private rateLimitRph: number;
   private bootstrapToken?: string;
   private bootstrapScopes: McpScope[];
+  private permissions: PermissionModel;
+  private securityAudit: LocalAuditLogger;
 
   constructor(authConfig?: AuthConfig) {
     this.server = new Server(
@@ -55,16 +58,19 @@ class GLearnMCPServer {
     );
 
     this.glearn = new GLearn();
+    this.permissions = PermissionModel.loadDefault();
+    this.securityAudit = new LocalAuditLogger('glearn');
 
     const env = typeof process !== 'undefined' ? process.env : {};
+    const secrets = getDefaultSecretManager();
     this.requireAuth = env.GLEARN_REQUIRE_AUTH === 'true';
     this.allowAnonymousRead = env.GLEARN_ALLOW_ANONYMOUS_READ !== 'false';
     this.defaultScopes = this.parseScopes(env.GLEARN_MCP_DEFAULT_SCOPES || 'read,write');
-    this.bootstrapToken = env.GLEARN_MCP_TOKEN;
+    this.bootstrapToken = secrets.get('glearn_mcp_token');
     this.bootstrapScopes = this.parseScopes(env.GLEARN_MCP_TOKEN_SCOPES || 'read,write');
 
     this.authMiddleware = createAuthMiddleware(authConfig || {
-      secret: env.GLEARN_AUTH_SECRET || 'dev-secret-key',
+      secret: secrets.get('glearn_auth_secret') || 'dev-secret-key',
       tool: 'glearn',
       defaultRoles: this.defaultScopes,
     });
@@ -232,11 +238,26 @@ class GLearnMCPServer {
       const requiredScope = this.requiredScopeForTool(name);
       const auth = this.authorize(request.params._meta, requiredScope);
       if (!auth.ok) {
+        this.securityAudit.logSecurityEvent({
+          event: 'mcp_auth_denied',
+          target: name,
+          scope: requiredScope,
+          success: false,
+          error: auth.error,
+        });
         return this.errorResponse(auth.error);
       }
 
       const rateLimit = this.checkRateLimit(auth.token);
       if (!rateLimit.allowed) {
+        this.securityAudit.logSecurityEvent({
+          event: 'mcp_rate_limited',
+          actor: this.tokenLabel(auth.token),
+          target: name,
+          scope: requiredScope,
+          success: false,
+          metadata: { reset_at: rateLimit.resetAt },
+        });
         return this.errorResponse(`Rate limit exceeded. Reset at ${rateLimit.resetAt}`);
       }
 
@@ -306,15 +327,16 @@ class GLearnMCPServer {
   private scopesForToken(token: string, fallbackRoles: string[]): McpScope[] {
     const issued = this.issuedTokens.get(token);
     if (issued && issued.expiresAt >= Date.now()) {
-      return issued.scopes;
+      return this.permissions.scopesForToken(token, issued.scopes).filter((scope): scope is McpScope => scope === 'read' || scope === 'write');
     }
     if (this.bootstrapToken && token === this.bootstrapToken) {
-      return this.bootstrapScopes;
+      return this.permissions.scopesForToken(token, this.bootstrapScopes).filter((scope): scope is McpScope => scope === 'read' || scope === 'write');
     }
     if (this.bootstrapToken) {
       return [];
     }
-    return this.parseScopes(fallbackRoles.join(','));
+    const fallback = this.parseScopes(fallbackRoles.join(','));
+    return this.permissions.scopesForToken(token, fallback).filter((scope): scope is McpScope => scope === 'read' || scope === 'write');
   }
 
   private requiredScopeForTool(name: string): McpScope {
@@ -346,6 +368,10 @@ class GLearnMCPServer {
     window.minuteCount++;
     window.hourCount++;
     return { allowed: true, resetAt: new Date(window.minuteStart + minuteMs).toISOString() };
+  }
+
+  private tokenLabel(token: string): string {
+    return token === 'anonymous-read' ? token : `token:${this.authMiddleware.getAuth().hashToken(token)}`;
   }
 
   private parseScopes(value: string): McpScope[] {

@@ -34,6 +34,8 @@ describe('GLearn MCP Server', () => {
     expect(serverSource).toContain('requiredScopeForTool');
     expect(serverSource).toContain('Insufficient permissions: requires');
     expect(serverSource).toContain('Rate limit exceeded');
-    expect(serverSource).toContain('GLEARN_MCP_TOKEN');
+    expect(serverSource).toContain("secrets.get('glearn_mcp_token')");
+    expect(serverSource).toContain('PermissionModel.loadDefault');
+    expect(serverSource).toContain('mcp_auth_denied');
   });
 });

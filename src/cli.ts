@@ -7,6 +7,14 @@ import { GBrainIntegrationClient } from './core/gbrain-integration.js';
 import { GStackGBrainSync } from './core/gstack-gbrain-sync.js';
 import { GLearnPersistenceManager } from './core/glearn-persistence.js';
 import type { MultiModelConfig } from './types/index.js';
+import {
+  getDefaultSecretManager,
+  sanitizeCliFloat,
+  sanitizeCliInteger,
+  sanitizeCliPath,
+  sanitizeCliString,
+  sanitizeCliUrl,
+} from './core/security.js';
 
 const program = new Command();
 
@@ -73,6 +81,60 @@ program
     }
   });
 
+const secretsCommand = program
+  .command('secrets')
+  .description('Manage local GLearn secrets');
+
+secretsCommand
+  .command('list')
+  .description('List configured secret names without values')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action((options) => {
+    const secrets = getDefaultSecretManager();
+    const records = secrets.list();
+    if (options.json) {
+      console.log(JSON.stringify(records, null, 2));
+      return;
+    }
+    if (!options.quiet) {
+      for (const record of records) {
+        console.log(`${record.name} v${record.version} ${record.source} ${record.rotated_at}`);
+      }
+    }
+  });
+
+secretsCommand
+  .command('rotate <name>')
+  .description('Rotate or create a local secret')
+  .option('--value <value>', 'Explicit secret value; otherwise one is generated')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action((name, options) => {
+    try {
+      const secrets = getDefaultSecretManager();
+      const value = options.value === undefined
+        ? undefined
+        : sanitizeCliString(options.value, 'secret value', 20000);
+      const record = secrets.rotate(sanitizeCliString(name, 'secret name', 128), value);
+      const result = {
+        name: record.name,
+        version: record.version,
+        rotated_at: record.rotated_at,
+        path: secrets.pathFor(record.name),
+      };
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else if (!options.quiet) {
+        console.log(chalk.green(`Secret rotated: ${result.name} v${result.version}`));
+        console.log(chalk.gray(`Stored at: ${result.path}`));
+      }
+    } catch (error) {
+      console.error(chalk.red(`[GLearn] ${error instanceof Error ? error.message : String(error)}`));
+      process.exit(1);
+    }
+  });
+
 // Run learning cycle
 program
   .command('run')
@@ -88,21 +150,16 @@ program
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
-    // Basic input validation
-    if (options.gbrain && options.gbrain.length > 500) {
-      console.error(chalk.red('Error: GBrain URL too long (max 500 characters)'));
-      process.exit(1);
-    }
-
+    const endpoints = sanitizeEndpointOptions(options);
     const cycles = parsePositiveInteger(options.cycles, '--cycles', 1, 100);
     const budgetUsd = parsePositiveNumber(options.budgetUsd, '--budget-usd');
     const multiModelConfig = buildMultiModelConfig(budgetUsd);
     const glearn = new GLearn({
-      gbrainEndpoint: options.gbrain,
-      gstackEndpoint: options.gstack,
-      gorchestratorEndpoint: options.gorchestrator,
-      gmirrorEndpoint: options.gmirror,
-      gtomEndpoint: options.gtom,
+      gbrainEndpoint: endpoints.gbrain,
+      gstackEndpoint: endpoints.gstack,
+      gorchestratorEndpoint: endpoints.gorchestrator,
+      gmirrorEndpoint: endpoints.gmirror,
+      gtomEndpoint: endpoints.gtom,
       multiModelConfig,
     });
 
@@ -244,21 +301,23 @@ program
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
+    const proposalId = sanitizeCliString(options.proposalId, '--proposal-id', 256);
+    const reviewer = sanitizeCliString(options.reviewer, '--reviewer', 128);
     const glearn = new GLearn();
-    const result = glearn.approveProposal(options.proposalId, options.reviewer);
+    const result = glearn.approveProposal(proposalId, reviewer);
 
     const output = {
-      proposal_id: options.proposalId,
-      reviewer: options.reviewer,
+      proposal_id: proposalId,
+      reviewer,
       status: result ? 'approved' : 'failed',
     };
 
     if (options.json) {
       console.log(JSON.stringify(output, null, 2));
     } else if (result && !options.quiet) {
-      console.log(chalk.green(`[GLearn] Proposal ${options.proposalId} approved by ${options.reviewer}`));
+      console.log(chalk.green(`[GLearn] Proposal ${proposalId} approved by ${reviewer}`));
     } else if (!result && !options.quiet) {
-      console.error(chalk.red(`[GLearn] Failed to approve proposal ${options.proposalId}`));
+      console.error(chalk.red(`[GLearn] Failed to approve proposal ${proposalId}`));
     }
 
     process.exit(result ? 0 : 1);
@@ -273,21 +332,23 @@ program
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
+    const proposalId = sanitizeCliString(options.proposalId, '--proposal-id', 256);
+    const reviewer = sanitizeCliString(options.reviewer, '--reviewer', 128);
     const glearn = new GLearn();
-    const result = glearn.rejectProposal(options.proposalId, options.reviewer);
+    const result = glearn.rejectProposal(proposalId, reviewer);
 
     const output = {
-      proposal_id: options.proposalId,
-      reviewer: options.reviewer,
+      proposal_id: proposalId,
+      reviewer,
       status: result ? 'rejected' : 'failed',
     };
 
     if (options.json) {
       console.log(JSON.stringify(output, null, 2));
     } else if (result && !options.quiet) {
-      console.log(chalk.green(`[GLearn] Proposal ${options.proposalId} rejected by ${options.reviewer}`));
+      console.log(chalk.green(`[GLearn] Proposal ${proposalId} rejected by ${reviewer}`));
     } else if (!result && !options.quiet) {
-      console.error(chalk.red(`[GLearn] Failed to reject proposal ${options.proposalId}`));
+      console.error(chalk.red(`[GLearn] Failed to reject proposal ${proposalId}`));
     }
 
     process.exit(result ? 0 : 1);
@@ -305,12 +366,13 @@ program
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
+    const endpoints = sanitizeEndpointOptions(options);
     const glearn = new GLearn({
-      gbrainEndpoint: options.gbrain,
-      gstackEndpoint: options.gstack,
-      gorchestratorEndpoint: options.gorchestrator,
-      gmirrorEndpoint: options.gmirror,
-      gtomEndpoint: options.gtom,
+      gbrainEndpoint: endpoints.gbrain,
+      gstackEndpoint: endpoints.gstack,
+      gorchestratorEndpoint: endpoints.gorchestrator,
+      gmirrorEndpoint: endpoints.gmirror,
+      gtomEndpoint: endpoints.gtom,
     });
 
     const health = await glearn.healthCheck();
@@ -395,13 +457,14 @@ program
       return;
     }
 
+    const endpoints = sanitizeEndpointOptions(options);
     const budgetUsd = parsePositiveNumber(options.budgetUsd, '--budget-usd');
     const glearn = new GLearn({
-      gbrainEndpoint: options.gbrain,
-      gstackEndpoint: options.gstack,
-      gorchestratorEndpoint: options.gorchestrator,
-      gmirrorEndpoint: options.gmirror,
-      gtomEndpoint: options.gtom,
+      gbrainEndpoint: endpoints.gbrain,
+      gstackEndpoint: endpoints.gstack,
+      gorchestratorEndpoint: endpoints.gorchestrator,
+      gmirrorEndpoint: endpoints.gmirror,
+      gtomEndpoint: endpoints.gtom,
       multiModelConfig: buildMultiModelConfig(budgetUsd),
     });
 
@@ -413,7 +476,7 @@ program
 
       const cycles = parsePositiveInteger(options.cycles, '--cycles', 1, 100);
       const fs = await import('fs/promises');
-      const corpusContent = await fs.readFile(options.corpus, 'utf-8');
+      const corpusContent = await fs.readFile(sanitizeCliPath(options.corpus, '--corpus'), 'utf-8');
       const corpus = JSON.parse(corpusContent);
 
       const allResults = [];
@@ -450,9 +513,10 @@ program
       if (options.json) {
         console.log(JSON.stringify(summary, null, 2));
       } else if (options.output) {
-        await fs.writeFile(options.output, JSON.stringify(summary, null, 2));
+        const outputPath = sanitizeCliPath(options.output, '--output');
+        await fs.writeFile(outputPath, JSON.stringify(summary, null, 2));
         if (!options.quiet) {
-          console.log(chalk.green(`[GLearn] Results written to ${options.output}`));
+          console.log(chalk.green(`[GLearn] Results written to ${outputPath}`));
         }
       } else {
         if (!options.quiet) {
@@ -491,7 +555,7 @@ program
   .action(async (options) => {
     try {
       const gbrain = new GBrainIntegrationClient({
-        endpoint: options.gbrain,
+        endpoint: sanitizeCliUrl(options.gbrain, '--gbrain'),
       });
       const stats = await gbrain.getGlearnStats();
       
@@ -525,7 +589,7 @@ program
     try {
       const { ReceiptRegistry } = await import('./core/receipt-registry.js');
       const { analyzeCohortDrift, executionReceiptToCohortSnapshot, parseWindowDuration } = await import('./core/drift-analysis.js');
-      const windowMs = parseWindowDuration(options.window);
+      const windowMs = parseWindowDuration(sanitizeCliString(options.window, '--window', 32));
       const registry = new ReceiptRegistry('glearn');
       const end = new Date();
       const start = new Date(end.getTime() - windowMs * 2);
@@ -584,17 +648,18 @@ program
   .option('--quiet', 'Suppress output for CI use')
   .action(async (id: string, options) => {
     try {
-      const isHash = /^[a-f0-9]{64}$/i.test(id);
-      const isCorpusSha8 = /^[a-f0-9]{8}$/i.test(id);
+      const replayId = sanitizeCliString(id, 'id', 256);
+      const isHash = /^[a-f0-9]{64}$/i.test(replayId);
+      const isCorpusSha8 = /^[a-f0-9]{8}$/i.test(replayId);
       if (!isHash) {
         const { ReceiptRegistry } = await import('./core/receipt-registry.js');
         const receiptRegistry = new ReceiptRegistry('glearn');
         const receipt = isCorpusSha8
-          ? (await receiptRegistry.getByCorpusSha8(id)).at(-1)
-          : await receiptRegistry.getByIdOrPath(id);
+          ? (await receiptRegistry.getByCorpusSha8(replayId)).at(-1)
+          : await receiptRegistry.getByIdOrPath(replayId);
 
         if (!receipt) {
-          console.error(chalk.red(`[GLearn] Receipt not found: ${id}`));
+          console.error(chalk.red(`[GLearn] Receipt not found: ${replayId}`));
           process.exit(1);
         }
 
@@ -619,19 +684,19 @@ program
       }
 
       const { ReplayManager } = await import('../../shared/src/core/replay-manager.js');
-      const replayManager = new ReplayManager(options.corpus);
+      const replayManager = new ReplayManager(sanitizeCliPath(options.corpus, '--corpus'));
       
-      const result = await replayManager.retrieve(id);
+      const result = await replayManager.retrieve(replayId);
       
       if (!result.found) {
-        console.error(chalk.red(`[GLearn] Hash not found in corpus: ${id}`));
+        console.error(chalk.red(`[GLearn] Hash not found in corpus: ${replayId}`));
         process.exit(1);
       }
 
       if (options.json) {
         console.log(JSON.stringify(result, null, 2));
       } else if (!options.quiet) {
-        console.log(chalk.blue.bold(`[GLearn] Replaying hash: ${id}`));
+        console.log(chalk.blue.bold(`[GLearn] Replaying hash: ${replayId}`));
         console.log(chalk.gray(`Tool: ${result.metadata.tool}`));
         console.log(chalk.gray(`Timestamp: ${result.metadata.timestamp}`));
         console.log(chalk.gray(`Task: ${result.metadata.task || 'N/A'}`));
@@ -664,11 +729,7 @@ program
         process.exit(1);
       }
 
-      const limit = parseInt(options.limit);
-      if (isNaN(limit) || limit < 1) {
-        console.error(chalk.red('[GLearn] --limit must be a positive integer'));
-        process.exit(1);
-      }
+      const limit = sanitizeCliInteger(options.limit, '--limit', 1, 1000);
 
       const receipts = (await receiptRegistry.getAllBetween(start, end)).slice(-limit);
       if (options.json) {
@@ -758,11 +819,7 @@ program
         }
       }
 
-      const tolerance = parseFloat(options.tolerance);
-      if (isNaN(tolerance) || tolerance < 0 || tolerance > 1) {
-        console.error(chalk.red('[GLearn] --tolerance must be a number between 0 and 1'));
-        process.exit(1);
-      }
+      const tolerance = sanitizeCliFloat(options.tolerance, '--tolerance', 0, 1);
 
       if (!options.baseline) {
         console.error(chalk.red('[GLearn] --baseline is required'));
@@ -775,13 +832,13 @@ program
       }
 
       const fs = await import('fs/promises');
-      const baselineContent = await fs.readFile(options.baseline, 'utf-8');
+      const baselineContent = await fs.readFile(sanitizeCliPath(options.baseline, '--baseline'), 'utf-8');
       const baseline = JSON.parse(baselineContent);
-      const corpusContent = await fs.readFile(options.corpus, 'utf-8');
+      const corpusContent = await fs.readFile(sanitizeCliPath(options.corpus, '--corpus'), 'utf-8');
       const corpus = JSON.parse(corpusContent);
 
       const glearn = new GLearn({
-        gbrainEndpoint: options.gbrain,
+        gbrainEndpoint: sanitizeCliUrl(options.gbrain, '--gbrain'),
         multiModelConfig: buildMultiModelConfig(parsePositiveNumber(options.budgetUsd, '--budget-usd')),
       });
 
@@ -920,11 +977,7 @@ program
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     try {
-      const windowDays = parseInt(options.window);
-      if (isNaN(windowDays) || windowDays <= 0) {
-        console.error(chalk.red('[GLearn] --window must be a positive integer'));
-        process.exit(1);
-      }
+      const windowDays = sanitizeCliInteger(options.window, '--window', 1, 3650);
 
       const { ReceiptRegistry } = await import('./core/receipt-registry.js');
       const registry = new ReceiptRegistry('glearn');
@@ -1076,21 +1129,42 @@ async function runReceiptRegression(against: string | undefined, options: any): 
 }
 
 function parsePositiveInteger(value: string, flag: string, min: number, max: number): number {
-  const parsed = Number.parseInt(value, 10);
-  if (Number.isNaN(parsed) || parsed < min || parsed > max) {
+  try {
+    return sanitizeCliInteger(value, flag, min, max);
+  } catch {
     console.error(chalk.red(`[GLearn] ${flag} must be an integer between ${min} and ${max}`));
     process.exit(1);
   }
-  return parsed;
 }
 
 function parsePositiveNumber(value: string, flag: string): number {
-  const parsed = Number.parseFloat(value);
-  if (Number.isNaN(parsed) || parsed <= 0) {
+  try {
+    return sanitizeCliFloat(value, flag, 0.01, 1000000);
+  } catch {
     console.error(chalk.red(`[GLearn] ${flag} must be a positive number`));
     process.exit(1);
   }
-  return parsed;
+}
+
+function sanitizeEndpointOptions(options: any): {
+  gbrain: string;
+  gstack: string;
+  gorchestrator: string;
+  gmirror: string;
+  gtom: string;
+} {
+  try {
+    return {
+      gbrain: sanitizeCliUrl(options.gbrain, '--gbrain'),
+      gstack: sanitizeCliUrl(options.gstack, '--gstack'),
+      gorchestrator: sanitizeCliUrl(options.gorchestrator, '--gorchestrator'),
+      gmirror: sanitizeCliUrl(options.gmirror, '--gmirror'),
+      gtom: sanitizeCliUrl(options.gtom, '--gtom'),
+    };
+  } catch (error) {
+    console.error(chalk.red(`[GLearn] ${error instanceof Error ? error.message : String(error)}`));
+    process.exit(1);
+  }
 }
 
 function buildMultiModelConfig(budgetUsd: number): MultiModelConfig {
@@ -1113,6 +1187,9 @@ function buildCompletionScript(shell: string): string | null {
     'backup',
     'restore',
     'export',
+    'secrets',
+    'rotate',
+    'list',
     'run',
     'patterns',
     'proposals',
@@ -1151,6 +1228,7 @@ function buildCompletionScript(shell: string): string | null {
     '--incremental',
     '--full',
     '--dry-run',
+    '--value',
   ];
   const words = [...commands, ...options].join(' ');
 
