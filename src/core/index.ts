@@ -9,6 +9,8 @@ export { ProposalGenerator } from './proposal-generator.js';
 export { CounterfactualEvaluator } from './counterfactual.js';
 export { ReceiptRegistry } from './receipt-registry.js';
 export { LLMClient } from './llm-client.js';
+export { GStackGBrainSync } from './gstack-gbrain-sync.js';
+export type { SyncMode, SyncOptions, SyncResult, SyncStageResult, GBrainSourceAttachment } from './gstack-gbrain-sync.js';
 export { DriftDetector } from './drift-detector.js';
 export type { DriftMetrics } from './drift-detector.js';
 export { CostLedger } from './cost-ledger.js';

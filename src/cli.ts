@@ -4,6 +4,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { GLearn } from './core/glearn.js';
 import { GBrainIntegrationClient } from './core/gbrain-integration.js';
+import { GStackGBrainSync } from './core/gstack-gbrain-sync.js';
 import { GLearnPersistenceManager } from './core/glearn-persistence.js';
 import type { MultiModelConfig } from './types/index.js';
 
@@ -336,6 +337,39 @@ program
     }
 
     process.exit(status === 'healthy' ? 0 : 1);
+  });
+
+program
+  .command('sync')
+  .description('Sync GLearn and stack tool sources into GBrain')
+  .option('--incremental', 'Run incremental sync (default)')
+  .option('--full', 'Run full sync and clean legacy source registrations')
+  .option('--dry-run', 'Show planned sync without writing files or registering sources')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (options) => {
+    const mode = options.full ? 'full' : 'incremental';
+    const sync = new GStackGBrainSync();
+
+    if (!options.quiet && !options.json) {
+      console.log(chalk.blue(`[GLearn] Syncing stack sources (${mode}${options.dryRun ? ', dry run' : ''})`));
+    }
+
+    const result = await sync.run({ mode, dryRun: options.dryRun });
+
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else if (!options.quiet) {
+      for (const stage of result.stages) {
+        const color = stage.status === 'ok' ? 'green' : stage.status === 'skipped' ? 'yellow' : 'red';
+        console.log(`  ${chalk[color](stage.status.padEnd(7))} ${stage.stage}: ${stage.items_changed}/${stage.items_total} changed`);
+        if (stage.error) console.log(`    ${chalk.red(stage.error)}`);
+      }
+      const statusColor = result.status === 'ok' ? 'green' : result.status === 'partial' ? 'yellow' : 'red';
+      console.log(chalk[statusColor](`[GLearn] Sync ${result.status}`));
+    }
+
+    process.exit(result.status === 'ok' ? 0 : 1);
   });
 
 // Eval mode
@@ -1085,6 +1119,7 @@ function buildCompletionScript(shell: string): string | null {
     'approve',
     'reject',
     'health',
+    'sync',
     'eval',
     'stats',
     'drift',
@@ -1113,6 +1148,9 @@ function buildCompletionScript(shell: string): string | null {
     '--output',
     '--corpus',
     '--against',
+    '--incremental',
+    '--full',
+    '--dry-run',
   ];
   const words = [...commands, ...options].join(' ');
 

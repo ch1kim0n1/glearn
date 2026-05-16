@@ -44,11 +44,18 @@ npm run docs:api
 | `glearn proposals` | List generated proposals and lifecycle state. |
 | `glearn approve`, `reject` | Move proposals through review state. |
 | `glearn health` | Check stack integrations and local health diagnostics. |
+| `glearn sync` | Register stack tool sources with GBrain using incremental, full, and dry-run modes. |
 | `glearn eval` | Run evaluation corpora and statistical comparisons. |
 | `glearn stats`, `drift`, `trend`, `regress` | Inspect learning quality, drift, and regression gates. |
 | `glearn replay`, `receipts`, `diff` | Inspect and compare execution evidence. |
 | `glearn cost`, `metrics` | Inspect budget ledger and observability exports. |
 | `glearn backup`, `restore`, `export` | Manage durable state. |
+
+`glearn sync --incremental` emits gstack-compatible stage results, registers each stack
+tool as a federated GBrain source with a `pathhash8` ID, and writes a `.gbrain-source`
+attachment into each tool path. `glearn sync --full` also removes legacy source IDs from
+the prior sync state. `glearn sync --dry-run --json` shows planned commands without
+acquiring a lock, writing source dotfiles, or updating state.
 
 ## Learning Flow
 
@@ -95,6 +102,8 @@ Common environment variables:
 | `GLEARN_HEALTH_WEBHOOK_URL` | Send health-drop webhook notifications. |
 | `GLEARN_LLM_CALL_RESERVE_USD` | Per-call budget reservation. |
 | `GLEARN_BUDGET_RESERVATION_TTL_MS` | Budget reservation expiration. |
+| `GLEARN_SYNC_ROOT` | Override the `gstack-gbrain-sync` lock and state directory. |
+| `GLEARN_TOOL_<NAME>_PATH` | Override a source path for `gbrain`, `gstack`, `gorchestrator`, `gmirror`, `gtom`, or `glearn`. |
 | `GBRAIN_ENDPOINT`, `GSTACK_ENDPOINT`, `GORCHESTRATOR_ENDPOINT` | Stack service endpoints. |
 | `GBRAIN_INTEGRATION_MODE` | `http` or `mcp` GBrain transport for observation and receipt integration. |
 | `GBRAIN_MCP_ENDPOINT` | Optional MCP endpoint when `GBRAIN_INTEGRATION_MODE=mcp`. |
