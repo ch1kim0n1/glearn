@@ -13,6 +13,10 @@ export const PatternSchema = z.object({
     'configuration_optimization',
     'failure_mode_cluster',
     'cost_anomaly',
+    'bid_cycle',
+    'repair_window',
+    'labor_drift',
+    'attachment_signal',
   ]),
   description: z.string(),
   confidence: z.number().min(0).max(1),
@@ -104,6 +108,167 @@ export const DataIngestionRequestSchema = z.object({
 });
 
 export type DataIngestionRequest = z.infer<typeof DataIngestionRequestSchema>;
+
+// ============================================================================
+// DYAD Relational Learning Types
+// ============================================================================
+
+export const RelationalEventSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('bid'),
+    participant: z.enum(['a', 'b']),
+    bid_type: z.string(),
+    timestamp: z.string().datetime(),
+    bid_id: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal('response'),
+    to_bid_id: z.string(),
+    response_type: z.enum(['toward', 'away', 'against', 'ignored']),
+    timestamp: z.string().datetime(),
+    participant: z.enum(['a', 'b']).optional(),
+  }),
+  z.object({
+    type: z.literal('repair_attempt'),
+    initiator: z.enum(['a', 'b']),
+    success: z.boolean(),
+    timestamp: z.string().datetime(),
+  }),
+  z.object({
+    type: z.literal('emotional_shift'),
+    participant: z.enum(['a', 'b']),
+    from: z.string(),
+    to: z.string(),
+    timestamp: z.string().datetime(),
+  }),
+]);
+
+export type RelationalEvent = z.infer<typeof RelationalEventSchema>;
+
+export const DyadDataSourceSchema = z.object({
+  source: z.literal('dyad'),
+  dyad_id: z.string(),
+  time_range: z.object({
+    start: z.string().datetime(),
+    end: z.string().datetime(),
+  }),
+  events: z.array(RelationalEventSchema),
+});
+
+export type DyadDataSource = z.infer<typeof DyadDataSourceSchema>;
+
+export const LearningRequestSchema = z.object({
+  request_id: z.string(),
+  source_tool: z.literal('DYAD'),
+  data_type: z.literal('relational_event'),
+  dyad_id: z.string(),
+  timestamp: z.string().datetime(),
+  payload: RelationalEventSchema,
+  metadata: z.record(z.any()).optional(),
+});
+
+export type LearningRequest = z.infer<typeof LearningRequestSchema>;
+
+export const RelationalPatternRecordSchema = z.object({
+  pattern_id: z.string(),
+  dyad_id: z.string(),
+  pattern_type: z.enum(['bid_cycle', 'repair_window', 'labor_drift', 'attachment_signal']),
+  signature: z.string(),
+  first_seen: z.string().datetime(),
+  last_seen: z.string().datetime(),
+  occurrence_count: z.number().int().positive(),
+  confidence: z.number().min(0).max(1),
+});
+
+export type RelationalPatternRecord = z.infer<typeof RelationalPatternRecordSchema>;
+
+export const EmotionalSnapshotRecordSchema = z.object({
+  snapshot_id: z.string(),
+  dyad_id: z.string(),
+  participant: z.enum(['a', 'b']),
+  timestamp: z.string().datetime(),
+  bid_rate: z.number().nullable().optional(),
+  response_rate: z.number().nullable().optional(),
+  labor_ratio: z.number().nullable().optional(),
+  repair_attempts: z.number().int().nullable().optional(),
+});
+
+export type EmotionalSnapshotRecord = z.infer<typeof EmotionalSnapshotRecordSchema>;
+
+export const DyadContextSchema = z.object({
+  dyad_id: z.string(),
+  participants: z.object({
+    a: z.string().optional(),
+    b: z.string().optional(),
+  }).optional(),
+  ethical_refusal: z.boolean().optional(),
+  notes: z.string().optional(),
+});
+
+export type DyadContext = z.infer<typeof DyadContextSchema>;
+
+export const RelationalProposalSchema = z.object({
+  proposal_id: z.string(),
+  dyad_id: z.string(),
+  pattern_ids: z.array(z.string()),
+  insight_type: z.enum(['bid_pattern', 'repair_opportunity', 'labor_imbalance', 'attachment_dynamic']),
+  insight: z.string(),
+  confidence: z.number().min(0).max(1),
+  grounding: z.array(z.string()).min(1),
+  should_surface: z.boolean(),
+  suggested_actions: z.array(z.string()),
+});
+
+export type RelationalProposal = z.infer<typeof RelationalProposalSchema>;
+
+export const EmotionalTrajectorySchema = z.object({
+  predicted_state_30min: z.string(),
+  predicted_state_24h: z.string(),
+  repair_probability: z.number().min(0).max(1),
+  escalation_probability: z.number().min(0).max(1),
+});
+
+export type EmotionalTrajectory = z.infer<typeof EmotionalTrajectorySchema>;
+
+export const RelationalCounterfactualInputSchema = z.object({
+  dyad_id: z.string(),
+  event: RelationalEventSchema,
+  actual_response: z.enum(['toward', 'away', 'against', 'ignored']),
+  message_window: z.array(RelationalEventSchema),
+});
+
+export type RelationalCounterfactualInput = z.infer<typeof RelationalCounterfactualInputSchema>;
+
+export const RelationalCounterfactualResultSchema = z.object({
+  counterfactual_id: z.string(),
+  original_trajectory: EmotionalTrajectorySchema,
+  alternative_trajectory: EmotionalTrajectorySchema,
+  divergence_score: z.number().min(0).max(1),
+  key_bifurcation: z.string(),
+  confidence: z.number().min(0).max(1),
+});
+
+export type RelationalCounterfactualResult = z.infer<typeof RelationalCounterfactualResultSchema>;
+
+export interface DyadHealthMetrics {
+  dyad_id: string;
+  timestamp: string;
+  bid_acceptance_rate: number;
+  repair_success_rate: number;
+  labor_ratio: number;
+  bid_count: number;
+  repair_attempt_count: number;
+}
+
+export interface DyadHealthAlert {
+  dyad_id: string;
+  metric: 'bid_acceptance_rate' | 'repair_success_rate' | 'labor_ratio';
+  message: string;
+  previous_value?: number;
+  current_value: number;
+  change?: number;
+  timestamp: string;
+}
 
 // ============================================================================
 // Tool-Specific Data Types

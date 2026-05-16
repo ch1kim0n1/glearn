@@ -9,6 +9,8 @@ import {
   CrossToolAnalysis,
   DriftDetection,
   CoverageGap,
+  LearningRequest,
+  RelationalEvent,
 } from '../types/index.js';
 import { LLMClient } from './llm-client.js';
 import { coreLogger } from './observability.js';
@@ -62,6 +64,10 @@ export class PatternMiner {
     // Configuration optimization opportunities
     const configPatterns = await this.detectConfigOptimizations();
     patterns.push(...configPatterns);
+
+    // DYAD relational learning patterns
+    const relationalPatterns = this.detectRelationalPatterns();
+    patterns.push(...relationalPatterns);
 
     this.patterns = patterns;
     return patterns;
@@ -205,6 +211,17 @@ export class PatternMiner {
       summary.push(`State count: ${data.vulnerability_states.length}`);
     }
 
+    if (tool.toUpperCase() === 'DYAD') {
+      const events = this.extractRelationalEvents(data).map(item => item.event);
+      const bids = events.filter(event => event.type === 'bid');
+      const responses = events.filter(event => event.type === 'response');
+      const repairs = events.filter(event => event.type === 'repair_attempt');
+      summary.push(`Relational events: ${events.length}`);
+      summary.push(`Bids: ${bids.length}`);
+      summary.push(`Responses: ${responses.length}`);
+      summary.push(`Repair attempts: ${repairs.length}`);
+    }
+
     return summary.join('. ');
   }
 
@@ -283,6 +300,7 @@ export class PatternMiner {
     if (data.runs) return data.runs.length;
     if (data.verdicts) return data.verdicts.length;
     if (data.vulnerability_states) return data.vulnerability_states.length;
+    if (tool.toUpperCase() === 'DYAD') return this.extractRelationalEvents(data).length;
     return 0;
   }
 
@@ -650,6 +668,191 @@ export class PatternMiner {
     }
 
     return patterns;
+  }
+
+  private detectRelationalPatterns(): Pattern[] {
+    const grouped = this.getRelationalEventsByDyad();
+    const patterns: Pattern[] = [];
+
+    for (const [dyadId, events] of grouped.entries()) {
+      patterns.push(...this.detectBidCycle(dyadId, events));
+      patterns.push(...this.detectLaborDrift(dyadId, events));
+      patterns.push(...this.detectRepairWindow(dyadId, events));
+      patterns.push(...this.detectAttachmentSignal(dyadId, events));
+    }
+
+    return patterns;
+  }
+
+  private detectBidCycle(dyadId: string, events: RelationalEvent[]): Pattern[] {
+    const bids = events.filter(event => event.type === 'bid');
+    const towardResponses = events.filter(event => event.type === 'response' && event.response_type === 'toward');
+    const ignoredResponses = events.filter(event => event.type === 'response' && event.response_type === 'ignored');
+
+    if (bids.length < 5 || towardResponses.length > 0) {
+      return [];
+    }
+
+    return [{
+      pattern_id: uuidv4(),
+      pattern_type: 'bid_cycle',
+      description: 'Recurring bids are appearing without toward acknowledgments, which can create a bid escalation cycle.',
+      confidence: ignoredResponses.length > 0 ? 0.82 : 0.78,
+      evidence: [
+        `Dyad: ${dyadId}`,
+        `Bids: ${bids.length}`,
+        `Toward responses: ${towardResponses.length}`,
+      ],
+      source_tools: ['DYAD'],
+      first_observed: this.firstTimestamp(events),
+      observation_count: bids.length,
+      metadata: {
+        dyad_id: dyadId,
+        bid_count: bids.length,
+        toward_response_count: towardResponses.length,
+        ignored_response_count: ignoredResponses.length,
+      },
+    }];
+  }
+
+  private detectLaborDrift(dyadId: string, events: RelationalEvent[]): Pattern[] {
+    const bids = events.filter((event): event is Extract<RelationalEvent, { type: 'bid' }> => event.type === 'bid');
+    if (bids.length < 5) {
+      return [];
+    }
+
+    const participantABids = bids.filter(event => event.participant === 'a').length;
+    const participantBBids = bids.length - participantABids;
+    const aRatio = participantABids / bids.length;
+    const dominantParticipant = aRatio >= 0.5 ? 'a' : 'b';
+    const dominantRatio = Math.max(aRatio, 1 - aRatio);
+
+    if (dominantRatio < 0.8) {
+      return [];
+    }
+
+    return [{
+      pattern_id: uuidv4(),
+      pattern_type: 'labor_drift',
+      description: 'One participant is carrying most observed bids for connection, suggesting emotional labor may be drifting out of balance.',
+      confidence: Math.min(0.95, dominantRatio),
+      evidence: [
+        `Dyad: ${dyadId}`,
+        `Participant a bids: ${participantABids}`,
+        `Participant b bids: ${participantBBids}`,
+        `Dominant share: ${(dominantRatio * 100).toFixed(1)}%`,
+      ],
+      source_tools: ['DYAD'],
+      first_observed: this.firstTimestamp(events),
+      observation_count: bids.length,
+      metadata: {
+        dyad_id: dyadId,
+        participant_a_bid_ratio: aRatio,
+        dominant_participant: dominantParticipant,
+      },
+    }];
+  }
+
+  private detectRepairWindow(dyadId: string, events: RelationalEvent[]): Pattern[] {
+    const repairs = events.filter((event): event is Extract<RelationalEvent, { type: 'repair_attempt' }> => event.type === 'repair_attempt');
+    const successes = repairs.filter(event => event.success);
+    if (repairs.length < 3 || successes.length < 2) {
+      return [];
+    }
+
+    return [{
+      pattern_id: uuidv4(),
+      pattern_type: 'repair_window',
+      description: 'Successful repair attempts recur often enough to preserve a repair window for this dyad.',
+      confidence: Math.min(0.9, successes.length / repairs.length),
+      evidence: [
+        `Dyad: ${dyadId}`,
+        `Repair attempts: ${repairs.length}`,
+        `Successful repairs: ${successes.length}`,
+      ],
+      source_tools: ['DYAD'],
+      first_observed: this.firstTimestamp(events),
+      observation_count: repairs.length,
+      metadata: {
+        dyad_id: dyadId,
+        success_rate: successes.length / repairs.length,
+      },
+    }];
+  }
+
+  private detectAttachmentSignal(dyadId: string, events: RelationalEvent[]): Pattern[] {
+    const shifts = events.filter((event): event is Extract<RelationalEvent, { type: 'emotional_shift' }> => event.type === 'emotional_shift');
+    const attachmentSignals = shifts.filter(event =>
+      /\b(anxious|avoidant|secure|distance|reassur|abandon|safe|closer)\b/i.test(`${event.from} ${event.to}`)
+    );
+
+    if (attachmentSignals.length < 2) {
+      return [];
+    }
+
+    return [{
+      pattern_id: uuidv4(),
+      pattern_type: 'attachment_signal',
+      description: 'Repeated emotional shifts include attachment-related language that may signal reassurance or distance needs.',
+      confidence: Math.min(0.85, attachmentSignals.length / Math.max(1, shifts.length)),
+      evidence: [
+        `Dyad: ${dyadId}`,
+        `Attachment-related shifts: ${attachmentSignals.length}`,
+      ],
+      source_tools: ['DYAD'],
+      first_observed: this.firstTimestamp(events),
+      observation_count: attachmentSignals.length,
+      metadata: {
+        dyad_id: dyadId,
+      },
+    }];
+  }
+
+  private getRelationalEventsByDyad(): Map<string, RelationalEvent[]> {
+    const grouped = new Map<string, RelationalEvent[]>();
+
+    for (const [tool, data] of this.dataStore.entries()) {
+      if (tool.toUpperCase() !== 'DYAD') {
+        continue;
+      }
+
+      for (const item of this.extractRelationalEvents(data)) {
+        const existing = grouped.get(item.dyad_id) || [];
+        existing.push(item.event);
+        grouped.set(item.dyad_id, existing);
+      }
+    }
+
+    for (const events of grouped.values()) {
+      events.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+    }
+
+    return grouped;
+  }
+
+  private extractRelationalEvents(data: any): Array<{ dyad_id: string; event: RelationalEvent }> {
+    if (Array.isArray(data)) {
+      return data
+        .filter((item): item is LearningRequest => item?.source_tool === 'DYAD' && item?.data_type === 'relational_event' && item?.payload)
+        .map(item => ({ dyad_id: item.dyad_id, event: item.payload }));
+    }
+
+    if (data?.source === 'dyad' && typeof data.dyad_id === 'string' && Array.isArray(data.events)) {
+      return data.events.map((event: RelationalEvent) => ({ dyad_id: data.dyad_id, event }));
+    }
+
+    if (Array.isArray(data?.events) && typeof data?.dyad_id === 'string') {
+      return data.events.map((event: RelationalEvent) => ({ dyad_id: data.dyad_id, event }));
+    }
+
+    return [];
+  }
+
+  private firstTimestamp(events: RelationalEvent[]): string {
+    const first = events
+      .map(event => event.timestamp)
+      .sort((a, b) => Date.parse(a) - Date.parse(b))[0];
+    return first || new Date().toISOString();
   }
 
   /**

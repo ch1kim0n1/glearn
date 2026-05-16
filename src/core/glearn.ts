@@ -19,10 +19,15 @@ import {
   TierConfig,
   ModelTier,
   ConsensusResult,
+  DyadDataSource,
+  DyadHealthAlert,
+  DyadHealthMetrics,
+  RelationalEvent,
 } from '../types/index.js';
 import { PatternMiner } from './pattern-miner.js';
 import { ProposalGenerator } from './proposal-generator.js';
 import { CounterfactualEvaluator } from './counterfactual.js';
+import { DyadDataSourceAdapter } from '../data-sources/dyad-data-source.js';
 import { LLMClient } from './llm-client.js';
 import { BudgetLedger } from './budget-ledger.js';
 import { ReceiptRegistry } from './receipt-registry.js';
@@ -75,6 +80,13 @@ interface PatternConsensusSummary {
 
 const CONSENSUS_DIMENSIONS = ['confidence', 'support', 'evidence', 'coverage'];
 
+interface ActiveRunCostGate {
+  runId: string;
+  startCostUsd: number;
+  perRunBudgetUsd: number;
+  currentTier: ModelTier;
+}
+
 /**
  * Main GLearn
  * 
@@ -116,6 +128,10 @@ export class GLearn {
   private logger: LocalLogger;
   private observability: GLearnObservability;
   private lastConsensusSummary?: PatternConsensusSummary;
+  private dyadAdapter: DyadDataSourceAdapter;
+  private activeRunCostGate?: ActiveRunCostGate;
+  private dyadMetricHistory: Map<string, DyadHealthMetrics[]> = new Map();
+  private dyadHealthAlerts: DyadHealthAlert[] = [];
 
   constructor(config: {
     gbrainEndpoint?: string;
@@ -160,7 +176,7 @@ export class GLearn {
     this.driftDetector = new DriftDetector({
       window_size: 100,
       drift_threshold: 0.2,
-      alert_threshold: 0.3,
+      alert_threshold: 0.2,
     });
     this.latencyTracker = new LatencyTracker(1000);
     this.observability = new GLearnObservability('glearn');
@@ -212,6 +228,7 @@ export class GLearn {
     this.patternMiner = new PatternMiner(this.llmClient);
     this.proposalGenerator = new ProposalGenerator(this.llmClient);
     this.counterfactualEvaluator = new CounterfactualEvaluator(this.llmClient);
+    this.dyadAdapter = new DyadDataSourceAdapter();
 
     // Initialize escalation metrics
     this.escalationMetrics = {
@@ -348,6 +365,8 @@ export class GLearn {
         },
       });
     });
+
+    this.enforceActiveRunCostGate();
   }
 
   /**
@@ -414,6 +433,20 @@ export class GLearn {
       started_at: new Date().toISOString(),
     };
 
+    const previousCostGate = this.activeRunCostGate;
+    const perRunBudgetUsd = this.getPerRunBudgetUsd();
+    if (perRunBudgetUsd === undefined) {
+      this.logger.warn('GLearn cost hard gate skipped because cost_budget_usd_per_hour is not set');
+      this.activeRunCostGate = undefined;
+    } else {
+      this.activeRunCostGate = {
+        runId,
+        startCostUsd: runStartCostUsd,
+        perRunBudgetUsd,
+        currentTier,
+      };
+    }
+
     try {
       // Phase 1: Ingest data from all tools
       this.logger.info('Phase 1: Ingesting data');
@@ -425,6 +458,7 @@ export class GLearn {
       const patterns = await this.minePatternsWithEscalation();
       const patternDuration = Date.now() - patternStartTime;
       run.patterns_found = patterns.length;
+      this.persistRelationalPatterns(patterns);
 
       // Update metrics
       this.escalationMetrics.total_tasks++;
@@ -539,6 +573,8 @@ export class GLearn {
         error: run.error_message,
       });
       this.observability.tracer.endSpan(span, error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      this.activeRunCostGate = previousCostGate;
     }
 
     this.latencyTracker.record(performance.now() - start);
@@ -583,6 +619,9 @@ export class GLearn {
   }
 
   private async collectPatternVote(tier: ModelTier): Promise<PatternConsensusVote> {
+    if (this.activeRunCostGate) {
+      this.activeRunCostGate.currentTier = tier;
+    }
     const tierConfig = this.tierConfigs.get(tier)!;
     this.logger.info(`Using ${tier}: ${tierConfig.name} for pattern mining`);
 
@@ -637,6 +676,9 @@ export class GLearn {
       this.logger.info('Critical path detected, escalating to Tier 3 for proposal generation');
       const tier3Config = this.tierConfigs.get('tier3')!;
       this.logger.info(`Using Tier 3: ${tier3Config.name}`);
+      if (this.activeRunCostGate) {
+        this.activeRunCostGate.currentTier = 'tier3';
+      }
 
       // Tier 3: Generate proposals with premium model for critical decisions
       proposals = await this.proposalGenerator.generateProposals(patterns);
@@ -648,6 +690,9 @@ export class GLearn {
       this.logger.info('Low statistical significance detected, escalating to Tier 2 for proposal generation');
       const tier2Config = this.tierConfigs.get('tier2')!;
       this.logger.info(`Using Tier 2: ${tier2Config.name}`);
+      if (this.activeRunCostGate) {
+        this.activeRunCostGate.currentTier = 'tier2';
+      }
 
       // Tier 2: Generate proposals with higher quality model
       proposals = await this.proposalGenerator.generateProposals(patterns);
@@ -657,6 +702,9 @@ export class GLearn {
       tier = 'tier2';
     } else {
       // Tier 1: Standard proposal generation
+      if (this.activeRunCostGate) {
+        this.activeRunCostGate.currentTier = 'tier1';
+      }
       proposals = await this.proposalGenerator.generateProposals(patterns);
     }
 
@@ -1021,6 +1069,27 @@ export class GLearn {
     }));
   }
 
+  async ingestDyadData(source: DyadDataSource): Promise<void> {
+    const normalized = this.dyadAdapter.normalize(source);
+    if (normalized.length === 0) {
+      this.patternMiner.ingestData('DYAD', []);
+      return;
+    }
+
+    this.patternMiner.ingestData('DYAD', normalized);
+    const metrics = this.computeDyadHealthMetrics(source);
+    this.recordDyadHealthMetrics(metrics);
+    this.persistDyadEmotionalSnapshots(source, metrics);
+  }
+
+  getDyadHealthAlerts(dyadId?: string): DyadHealthAlert[] {
+    return this.dyadHealthAlerts.filter(alert => !dyadId || alert.dyad_id === dyadId);
+  }
+
+  getDyadHealthMetrics(dyadId: string): DyadHealthMetrics[] {
+    return [...(this.dyadMetricHistory.get(dyadId) || [])];
+  }
+
   /**
    * Ingest data from all tools
    */
@@ -1063,6 +1132,17 @@ export class GLearn {
       this.patternMiner.ingestData('GToM', gtomData);
     } catch (error) {
       this.logger.warn('Failed to ingest GToM data', { error: error instanceof Error ? error.message : String(error) });
+    }
+
+    if (process.env.GLEARN_DYAD_MODE === 'true') {
+      try {
+        const sources = await this.fetchDyadDataSources(timeRange);
+        for (const source of sources) {
+          await this.ingestDyadData(source);
+        }
+      } catch (error) {
+        this.logger.warn('Failed to ingest DYAD data', { error: error instanceof Error ? error.message : String(error) });
+      }
     }
   }
 
@@ -1128,6 +1208,154 @@ export class GLearn {
       vulnerability_states: [],
       authenticity_scores: [],
     };
+  }
+
+  private async fetchDyadDataSources(timeRange?: { start: string; end: string }): Promise<DyadDataSource[]> {
+    const raw = process.env.GLEARN_DYAD_DATA;
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+    const sources = Array.isArray(parsed) ? parsed : [parsed];
+    return sources.map(source => ({
+      ...source,
+      source: 'dyad',
+      time_range: source.time_range || timeRange || this.defaultDyadTimeRange(),
+    })) as DyadDataSource[];
+  }
+
+  private defaultDyadTimeRange(): { start: string; end: string } {
+    const end = new Date();
+    const start = new Date(end.getTime() - 60 * 60 * 1000);
+    return {
+      start: start.toISOString(),
+      end: end.toISOString(),
+    };
+  }
+
+  private computeDyadHealthMetrics(source: DyadDataSource): DyadHealthMetrics {
+    const bids = source.events.filter((event): event is Extract<RelationalEvent, { type: 'bid' }> => event.type === 'bid');
+    const towardResponses = source.events.filter(event => event.type === 'response' && event.response_type === 'toward');
+    const repairs = source.events.filter((event): event is Extract<RelationalEvent, { type: 'repair_attempt' }> => event.type === 'repair_attempt');
+    const participantABids = bids.filter(bid => bid.participant === 'a').length;
+
+    return {
+      dyad_id: source.dyad_id,
+      timestamp: new Date().toISOString(),
+      bid_acceptance_rate: bids.length > 0 ? towardResponses.length / bids.length : 0,
+      repair_success_rate: repairs.length > 0
+        ? repairs.filter(repair => repair.success).length / repairs.length
+        : 0,
+      labor_ratio: bids.length > 0 ? participantABids / bids.length : 0.5,
+      bid_count: bids.length,
+      repair_attempt_count: repairs.length,
+    };
+  }
+
+  private recordDyadHealthMetrics(metrics: DyadHealthMetrics): void {
+    const history = this.dyadMetricHistory.get(metrics.dyad_id) || [];
+    const previous = history[history.length - 1];
+    history.push(metrics);
+    this.dyadMetricHistory.set(metrics.dyad_id, history);
+
+    const context = {
+      dyad_id: metrics.dyad_id,
+      timestamp: metrics.timestamp,
+    };
+    this.driftDetector.recordSnapshot(`bid_acceptance_rate:${metrics.dyad_id}`, metrics.bid_acceptance_rate, context);
+    this.driftDetector.recordSnapshot(`repair_success_rate:${metrics.dyad_id}`, metrics.repair_success_rate, context);
+    this.driftDetector.recordSnapshot(`labor_ratio:${metrics.dyad_id}`, metrics.labor_ratio, context);
+
+    const alerts = this.buildDyadHealthAlerts(metrics, previous);
+    for (const alert of alerts) {
+      this.dyadHealthAlerts.push(alert);
+      this.auditLogger.logDecision({
+        operation: 'dyad_health_drift',
+        decision: alert.metric,
+        correlation_id: metrics.dyad_id,
+        success: false,
+        metadata: {
+          message: alert.message,
+          previous_value: alert.previous_value,
+          current_value: alert.current_value,
+          change: alert.change,
+        },
+      });
+    }
+  }
+
+  private buildDyadHealthAlerts(metrics: DyadHealthMetrics, previous?: DyadHealthMetrics): DyadHealthAlert[] {
+    const alerts: DyadHealthAlert[] = [];
+    const singleEventWindow = metrics.bid_count + metrics.repair_attempt_count <= 1;
+    if (singleEventWindow) {
+      return alerts;
+    }
+
+    if (previous && previous.bid_acceptance_rate > 0) {
+      const drop = (previous.bid_acceptance_rate - metrics.bid_acceptance_rate) / previous.bid_acceptance_rate;
+      if (drop > 0.2) {
+        alerts.push({
+          dyad_id: metrics.dyad_id,
+          metric: 'bid_acceptance_rate',
+          message: 'Bid responsiveness declining',
+          previous_value: previous.bid_acceptance_rate,
+          current_value: metrics.bid_acceptance_rate,
+          change: drop,
+          timestamp: metrics.timestamp,
+        });
+      }
+    }
+
+    if (previous && previous.repair_success_rate > 0) {
+      const drop = (previous.repair_success_rate - metrics.repair_success_rate) / previous.repair_success_rate;
+      if (drop > 0.2) {
+        alerts.push({
+          dyad_id: metrics.dyad_id,
+          metric: 'repair_success_rate',
+          message: 'Repair attempts less successful',
+          previous_value: previous.repair_success_rate,
+          current_value: metrics.repair_success_rate,
+          change: drop,
+          timestamp: metrics.timestamp,
+        });
+      }
+    }
+
+    if (metrics.bid_count >= 5 && Math.abs(metrics.labor_ratio - 0.5) > 0.2) {
+      alerts.push({
+        dyad_id: metrics.dyad_id,
+        metric: 'labor_ratio',
+        message: 'Emotional labor imbalance detected',
+        current_value: metrics.labor_ratio,
+        change: Math.abs(metrics.labor_ratio - 0.5),
+        timestamp: metrics.timestamp,
+      });
+    }
+
+    return alerts;
+  }
+
+  private persistDyadEmotionalSnapshots(source: DyadDataSource, metrics: DyadHealthMetrics): void {
+    const responses = source.events.filter(event => event.type === 'response');
+    const repairs = source.events.filter((event): event is Extract<RelationalEvent, { type: 'repair_attempt' }> => event.type === 'repair_attempt');
+    const bids = source.events.filter((event): event is Extract<RelationalEvent, { type: 'bid' }> => event.type === 'bid');
+
+    for (const participant of ['a', 'b'] as const) {
+      const participantBidCount = bids.filter(bid => bid.participant === participant).length;
+      const participantResponses = responses.filter(response => response.participant === participant).length;
+      const participantRepairs = repairs.filter(repair => repair.initiator === participant).length;
+      this.persistenceDb.saveEmotionalSnapshot({
+        snapshot_id: uuidv4(),
+        dyad_id: source.dyad_id,
+        participant,
+        timestamp: metrics.timestamp,
+        bid_rate: bids.length > 0 ? participantBidCount / bids.length : 0,
+        response_rate: responses.length > 0 ? participantResponses / responses.length : 0,
+        labor_ratio: participant === 'a' ? metrics.labor_ratio : 1 - metrics.labor_ratio,
+        repair_attempts: participantRepairs,
+      });
+    }
   }
 
   /**
@@ -1838,6 +2066,66 @@ export class GLearn {
     } catch (error) {
       this.observability.metrics.recordPublicMethod('getCostStats', performance.now() - start, 'error');
       throw error;
+    }
+  }
+
+  private getPerRunBudgetUsd(): number | undefined {
+    const hourlyBudget = Number(this.multiModelConfig.cost_budget_usd_per_hour);
+    if (!Number.isFinite(hourlyBudget) || hourlyBudget <= 0) {
+      return undefined;
+    }
+    return hourlyBudget / 60;
+  }
+
+  private enforceActiveRunCostGate(): void {
+    if (!this.activeRunCostGate) {
+      return;
+    }
+
+    const runCostUsd = this.llmClient.getTotalCostUsd() - this.activeRunCostGate.startCostUsd;
+    if (runCostUsd <= this.activeRunCostGate.perRunBudgetUsd) {
+      return;
+    }
+
+    const message = `Cost hard gate: $${runCostUsd.toFixed(4)} exceeds per-run budget $${this.activeRunCostGate.perRunBudgetUsd.toFixed(4)}`;
+    this.auditLogger.logDecision({
+      operation: 'cost_hard_gate',
+      decision: 'cost_hard_gate_triggered',
+      correlation_id: this.activeRunCostGate.runId,
+      success: false,
+      cost_usd: runCostUsd,
+      error: message,
+      metadata: {
+        run_cost: runCostUsd,
+        per_run_budget: this.activeRunCostGate.perRunBudgetUsd,
+        escalation_tier: this.activeRunCostGate.currentTier,
+      },
+    });
+
+    throw new Error(message);
+  }
+
+  private persistRelationalPatterns(patterns: Pattern[]): void {
+    const relationalPatterns = patterns.filter(pattern =>
+      ['bid_cycle', 'repair_window', 'labor_drift', 'attachment_signal'].includes(pattern.pattern_type)
+    );
+
+    for (const pattern of relationalPatterns) {
+      const dyadId = typeof pattern.metadata?.dyad_id === 'string' ? pattern.metadata.dyad_id : 'unknown';
+      this.persistenceDb.saveRelationalPattern({
+        pattern_id: pattern.pattern_id,
+        dyad_id: dyadId,
+        pattern_type: pattern.pattern_type as 'bid_cycle' | 'repair_window' | 'labor_drift' | 'attachment_signal',
+        signature: crypto.createHash('sha256').update(JSON.stringify({
+          pattern_type: pattern.pattern_type,
+          evidence: pattern.evidence,
+          metadata: pattern.metadata,
+        })).digest('hex'),
+        first_seen: pattern.first_observed,
+        last_seen: new Date().toISOString(),
+        occurrence_count: Math.max(1, pattern.observation_count),
+        confidence: pattern.confidence,
+      });
     }
   }
 

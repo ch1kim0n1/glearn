@@ -2,7 +2,12 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import { Pattern, Proposal } from '../types/index.js';
+import {
+  EmotionalSnapshotRecord,
+  Pattern,
+  Proposal,
+  RelationalPatternRecord,
+} from '../types/index.js';
 import { coreLogger } from './observability.js';
 
 export interface StoredLlmCall {
@@ -34,7 +39,7 @@ export interface StoredCostEntry {
 export class GLearnPersistenceManager {
   private db: any;
   private dbPath: string;
-  private readonly SCHEMA_VERSION = 2;
+  private readonly SCHEMA_VERSION = 3;
   private backupDir: string;
   private backupRetentionCount: number;
 
@@ -71,7 +76,7 @@ export class GLearnPersistenceManager {
       )
     `);
 
-    const row = this.db.prepare('SELECT version FROM schema_version').get() as { version: number } | undefined;
+    const row = this.db.prepare('SELECT MAX(version) AS version FROM schema_version').get() as { version: number } | undefined;
     const currentVersion = row?.version || 0;
 
     if (currentVersion < this.SCHEMA_VERSION) {
@@ -241,6 +246,66 @@ export class GLearnPersistenceManager {
     return row ? JSON.parse(row.value_json) as T : null;
   }
 
+  saveRelationalPattern(pattern: RelationalPatternRecord): void {
+    this.db.prepare(`
+      INSERT INTO relational_patterns
+      (pattern_id, dyad_id, pattern_type, signature, first_seen, last_seen, occurrence_count, confidence)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(pattern_id) DO UPDATE SET
+        dyad_id = excluded.dyad_id,
+        pattern_type = excluded.pattern_type,
+        signature = excluded.signature,
+        last_seen = excluded.last_seen,
+        occurrence_count = relational_patterns.occurrence_count + excluded.occurrence_count,
+        confidence = excluded.confidence
+    `).run(
+      pattern.pattern_id,
+      pattern.dyad_id,
+      pattern.pattern_type,
+      pattern.signature,
+      pattern.first_seen,
+      pattern.last_seen,
+      pattern.occurrence_count,
+      pattern.confidence
+    );
+  }
+
+  getRelationalPatterns(dyadId: string): RelationalPatternRecord[] {
+    return this.db.prepare(`
+      SELECT pattern_id, dyad_id, pattern_type, signature, first_seen, last_seen, occurrence_count, confidence
+      FROM relational_patterns
+      WHERE dyad_id = ?
+      ORDER BY last_seen DESC
+    `).all(dyadId) as RelationalPatternRecord[];
+  }
+
+  saveEmotionalSnapshot(snapshot: EmotionalSnapshotRecord): void {
+    this.db.prepare(`
+      INSERT OR REPLACE INTO emotional_snapshots
+      (snapshot_id, dyad_id, participant, timestamp, bid_rate, response_rate, labor_ratio, repair_attempts)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      snapshot.snapshot_id,
+      snapshot.dyad_id,
+      snapshot.participant,
+      snapshot.timestamp,
+      snapshot.bid_rate ?? null,
+      snapshot.response_rate ?? null,
+      snapshot.labor_ratio ?? null,
+      snapshot.repair_attempts ?? null
+    );
+  }
+
+  getEmotionalSnapshots(dyadId: string, limit: number = 100): EmotionalSnapshotRecord[] {
+    return this.db.prepare(`
+      SELECT snapshot_id, dyad_id, participant, timestamp, bid_rate, response_rate, labor_ratio, repair_attempts
+      FROM emotional_snapshots
+      WHERE dyad_id = ?
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `).all(dyadId, limit) as EmotionalSnapshotRecord[];
+  }
+
   addLlmCall(call: StoredLlmCall): string {
     const id = call.id || crypto.randomUUID();
     this.db.prepare(`
@@ -316,6 +381,8 @@ export class GLearnPersistenceManager {
       proposals: this.getAllProposals(),
       data_store: Object.fromEntries(this.getDataStoreEntries()),
       escalation_metrics: this.loadEscalationMetrics(),
+      relational_patterns: this.db.prepare('SELECT * FROM relational_patterns ORDER BY last_seen DESC').all(),
+      emotional_snapshots: this.db.prepare('SELECT * FROM emotional_snapshots ORDER BY timestamp DESC').all(),
       llm_call_history: this.db.prepare('SELECT * FROM llm_call_history ORDER BY timestamp DESC').all(),
       cost_ledger: this.db.prepare('SELECT * FROM cost_ledger ORDER BY timestamp DESC').all(),
       migrations: this.db.prepare('SELECT * FROM migrations ORDER BY version ASC').all(),
@@ -498,6 +565,35 @@ export class GLearnPersistenceManager {
             metadata_json TEXT
           );
           CREATE INDEX IF NOT EXISTS idx_cost_ledger_timestamp ON cost_ledger(timestamp);
+        `,
+      },
+      {
+        version: 3,
+        name: 'dyad_relational_tables',
+        sql: `
+          CREATE TABLE IF NOT EXISTS relational_patterns (
+            pattern_id TEXT PRIMARY KEY,
+            dyad_id TEXT NOT NULL,
+            pattern_type TEXT NOT NULL,
+            signature TEXT NOT NULL,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            occurrence_count INTEGER DEFAULT 1,
+            confidence REAL NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_relational_patterns_dyad ON relational_patterns(dyad_id);
+          CREATE INDEX IF NOT EXISTS idx_relational_patterns_last_seen ON relational_patterns(last_seen);
+          CREATE TABLE IF NOT EXISTS emotional_snapshots (
+            snapshot_id TEXT PRIMARY KEY,
+            dyad_id TEXT NOT NULL,
+            participant TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            bid_rate REAL,
+            response_rate REAL,
+            labor_ratio REAL,
+            repair_attempts INTEGER
+          );
+          CREATE INDEX IF NOT EXISTS idx_emotional_snapshots_dyad_timestamp ON emotional_snapshots(dyad_id, timestamp DESC);
         `,
       },
     ];

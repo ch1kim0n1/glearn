@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from '@jest/globals';
 import { v4 as uuidv4 } from 'uuid';
 import { PatternMiner } from '../src/core/pattern-miner';
-import { GOrchestratorData, GMirrorData, GToMData, GStackData } from '../src/types/index';
+import { GOrchestratorData, GMirrorData, GToMData, GStackData, PatternSchema } from '../src/types/index';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -304,5 +304,71 @@ describe('PatternMiner', () => {
 
     expect(correlation).toBeDefined();
     expect(correlation!.description).toContain('LLM identified');
+  });
+
+  it('validates all DYAD relational pattern types', () => {
+    for (const patternType of ['bid_cycle', 'repair_window', 'labor_drift', 'attachment_signal']) {
+      expect(() => PatternSchema.parse({
+        pattern_id: uuidv4(),
+        pattern_type: patternType,
+        description: `${patternType} pattern`,
+        confidence: 0.8,
+        evidence: ['observed'],
+        source_tools: ['DYAD'],
+        first_observed: new Date().toISOString(),
+        observation_count: 5,
+      })).not.toThrow();
+    }
+  });
+
+  it('detects bid_cycle from five bids with no toward responses', async () => {
+    const timestamp = Date.parse('2026-05-16T10:00:00.000Z');
+    miner.ingestData('DYAD', Array.from({ length: 5 }, (_, index) => ({
+      request_id: `dyad-1:bid:${index}`,
+      source_tool: 'DYAD',
+      data_type: 'relational_event',
+      dyad_id: 'dyad-1',
+      timestamp: new Date(timestamp + index * 60_000).toISOString(),
+      payload: {
+        type: 'bid',
+        participant: 'a',
+        bid_type: 'attention',
+        bid_id: `bid-${index}`,
+        timestamp: new Date(timestamp + index * 60_000).toISOString(),
+      },
+    })));
+
+    const patterns = await miner.minePatterns();
+    const bidCycle = patterns.find(pattern => pattern.pattern_type === 'bid_cycle');
+
+    expect(bidCycle).toBeDefined();
+    expect(bidCycle?.metadata?.dyad_id).toBe('dyad-1');
+    expect(bidCycle?.observation_count).toBe(5);
+  });
+
+  it('detects labor_drift when participant a makes 80 percent of bids', async () => {
+    const timestamp = Date.parse('2026-05-16T10:00:00.000Z');
+    const participants = ['a', 'a', 'a', 'a', 'b'] as const;
+    miner.ingestData('DYAD', participants.map((participant, index) => ({
+      request_id: `dyad-2:bid:${index}`,
+      source_tool: 'DYAD',
+      data_type: 'relational_event',
+      dyad_id: 'dyad-2',
+      timestamp: new Date(timestamp + index * 60_000).toISOString(),
+      payload: {
+        type: 'bid',
+        participant,
+        bid_type: 'support',
+        bid_id: `bid-${index}`,
+        timestamp: new Date(timestamp + index * 60_000).toISOString(),
+      },
+    })));
+
+    const patterns = await miner.minePatterns();
+    const laborDrift = patterns.find(pattern => pattern.pattern_type === 'labor_drift');
+
+    expect(laborDrift).toBeDefined();
+    expect(laborDrift?.metadata?.dominant_participant).toBe('a');
+    expect(laborDrift?.metadata?.participant_a_bid_ratio).toBe(0.8);
   });
 });
