@@ -1,3 +1,20 @@
+## Quickstart (60 seconds)
+
+```bash
+npm install glearn
+```
+
+```typescript
+import { LearnSDK } from 'glearn';
+const learn = new LearnSDK({ apiKey: process.env.ANTHROPIC_API_KEY });
+const result = await learn.demo(); // runs on built-in synthetic data
+console.log('Patterns found:', result.patterns?.length ?? 0);
+```
+
+> No Docker. No services. Mine patterns from execution history and generate optimization proposals.
+
+---
+
 # GLearn
 
 GLearn is the meta-learning and reflective layer for the G-Stack. It mines patterns from

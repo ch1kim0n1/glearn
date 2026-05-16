@@ -9,14 +9,19 @@
   },
   "exports": {
     ".": {
-      "types": "./dist/core/index.d.ts",
-      "import": "./dist/core/index.js",
-      "require": "./dist/core/index.js"
+      "types": "./dist/glearn/src/sdk.d.ts",
+      "import": "./dist/glearn/src/sdk.js",
+      "require": "./dist/glearn/src/sdk.js"
+    },
+    "./sdk": {
+      "types": "./dist/glearn/src/sdk.d.ts",
+      "import": "./dist/glearn/src/sdk.js",
+      "require": "./dist/glearn/src/sdk.js"
     },
     "./cli": {
-      "types": "./dist/cli.d.ts",
-      "import": "./dist/cli.js",
-      "require": "./dist/cli.js"
+      "types": "./dist/glearn/src/cli.d.ts",
+      "import": "./dist/glearn/src/cli.js",
+      "require": "./dist/glearn/src/cli.js"
     },
     "./client": {
       "types": "./dist/glearn/src/client.d.ts",

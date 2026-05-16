@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "supported_versions": [
+    1
+  ],
+  "created_at": "2026-05-16T22:33:39.232Z",
+  "migration_path": {
+    "missing->1": "Receipts without schema_version are treated as v1 and annotated during read."
+  },
+  "retention_days": 28
+}
