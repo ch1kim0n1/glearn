@@ -2,12 +2,20 @@ import { v4 as uuidv4 } from 'uuid';
 import {
   Pattern,
   Proposal,
+  RelationalProposal,
   GOrchestratorData,
   GMirrorData,
   GStackData,
 } from '../types/index.js';
 import { LLMClient } from './llm-client.js';
 import { LocalLogger, type LogLevel } from './observability.js';
+
+/**
+ * A Pattern restricted to DYAD relational pattern types.
+ */
+export type DyadPattern = Pattern & {
+  pattern_type: 'bid_cycle' | 'repair_window' | 'labor_drift';
+};
 
 /**
  * Proposal Generator
@@ -503,6 +511,62 @@ Evidence: ${pattern.evidence.join(', ')}
 Source Tools: ${pattern.source_tools.join(', ')}
 
 Return only the rationale, no additional text.`;
+  }
+
+  /**
+   * Generate relational proposals from DYAD-specific patterns.
+   * Uses deterministic templates — no LLM call.
+   */
+  async generateRelationalProposals(patterns: DyadPattern[]): Promise<RelationalProposal[]> {
+    const insightTemplates: Record<DyadPattern['pattern_type'], {
+      insight_type: RelationalProposal['insight_type'];
+      insight: string;
+      grounding: string[];
+    }> = {
+      bid_cycle: {
+        insight_type: 'bid_pattern',
+        insight: 'One participant is initiating connection significantly more often than the other is responding. This asymmetry often predicts disconnection if unaddressed (Gottman, 1994).',
+        grounding: [
+          'Gottman (1994): bid responsiveness and relationship satisfaction',
+          'Johnson (EFT): attachment bids and responsiveness',
+        ],
+      },
+      repair_window: {
+        insight_type: 'repair_opportunity',
+        insight: 'Repair attempts appear to succeed within a predictable window after conflict. Protecting this window may make repair more accessible.',
+        grounding: [
+          'Gottman (1994): repair attempts and relationship stability',
+          'Bowlby: secure base and safe haven attachment theory',
+        ],
+      },
+      labor_drift: {
+        insight_type: 'labor_imbalance',
+        insight: 'Noticing a gradual emotional labor imbalance — one participant is carrying more of the relational maintenance work. This drift can accumulate quietly until it becomes harder to address.',
+        grounding: [
+          'Gottman (1994): 5:1 positive-to-negative interaction ratio',
+          'Johnson (EFT): attachment bids and responsiveness',
+        ],
+      },
+    };
+
+    const proposals: RelationalProposal[] = [];
+    for (const pattern of patterns) {
+      const template = insightTemplates[pattern.pattern_type];
+      if (!template) continue;
+      const dyadId = (pattern.metadata?.dyad_id as string | undefined) ?? 'unknown';
+      proposals.push({
+        proposal_id: uuidv4(),
+        dyad_id: dyadId,
+        pattern_ids: [pattern.pattern_id],
+        insight_type: template.insight_type,
+        insight: template.insight,
+        confidence: pattern.confidence,
+        grounding: template.grounding,
+        should_surface: pattern.confidence >= 0.6,
+        suggested_actions: [],
+      });
+    }
+    return proposals;
   }
 
   /**

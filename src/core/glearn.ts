@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import { BudgetExceededError } from './errors.js';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -323,6 +324,12 @@ export class GLearn {
     costUsd: number,
   ): Promise<void> {
     await this.costLedgerReady;
+    if (this.activeRunCostGate) {
+      const spentThisRun = this.llmClient.getTotalCostUsd() - this.activeRunCostGate.startCostUsd;
+      if (spentThisRun >= this.activeRunCostGate.perRunBudgetUsd) {
+        throw new BudgetExceededError(`Cost hard gate: $${spentThisRun.toFixed(4)} spent this run exceeds per-run budget $${this.activeRunCostGate.perRunBudgetUsd.toFixed(4)}`);
+      }
+    }
     const reserveUsd = Math.max(costUsd, Number(process.env.GLEARN_LLM_CALL_RESERVE_USD || '0.01'));
     const ttlMs = Number(process.env.GLEARN_BUDGET_RESERVATION_TTL_MS || String(5 * 60 * 1000));
     const reservation = this.costLedger.reserve('learning_cycle_llm', reserveUsd, ttlMs, {

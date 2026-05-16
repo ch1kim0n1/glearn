@@ -3,7 +3,11 @@ import { ReceiptRegistry } from '../src/core/receipt-registry.js';
 import { GLEARN_RUBRIC_V1 } from '../src/core/glearn-rubric.js';
 import { evaluateRegressionGates, loadRegressionBaselines } from '../src/core/regression-gates.js';
 
-describe('GLearn Baseline Regression Tests', () => {
+jest.setTimeout(30000);
+
+const describeIfLLM = process.env.ANTHROPIC_API_KEY ? describe : describe.skip;
+
+describeIfLLM('GLearn Baseline Regression Tests', () => {
   let glearn: GLearn;
   let registry: ReceiptRegistry;
   const TOLERANCE = 0.05;

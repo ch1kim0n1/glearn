@@ -4,6 +4,8 @@ import * as path from 'path';
 import { GLearn } from '../src/core/glearn';
 import { DyadDataSource } from '../src/types/index';
 
+jest.setTimeout(30000);
+
 const dyadSource = (
   dyad_id: string,
   events: DyadDataSource['events'],
@@ -91,7 +93,7 @@ describe('GLearn DYAD integration', () => {
     expect(glearn.getDyadHealthAlerts('dyad-single')).toHaveLength(0);
   });
 
-  it('includes DYAD data in runLearningCycle when GLEARN_DYAD_MODE is true', async () => {
+  (process.env.ANTHROPIC_API_KEY ? it : it.skip)('includes DYAD data in runLearningCycle when GLEARN_DYAD_MODE is true', async () => {
     process.env.GLEARN_DYAD_MODE = 'true';
     process.env.GLEARN_DYAD_DATA = JSON.stringify(dyadSource('dyad-cycle', bids(['a', 'a', 'a', 'a', 'a'])));
 

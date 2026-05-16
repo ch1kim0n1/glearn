@@ -57,3 +57,10 @@ export class CounterfactualError extends GLearnError {
     this.name = 'CounterfactualError';
   }
 }
+
+export class BudgetExceededError extends GLearnError {
+  constructor(message: string) {
+    super(message, 'BUDGET_EXCEEDED');
+    this.name = 'BudgetExceededError';
+  }
+}
