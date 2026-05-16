@@ -17,6 +17,20 @@ import {
 } from './core/security.js';
 import { runAnalyzeCommand } from './commands/analyze.js';
 
+function requireServices(commandName: string): void {
+  const enabled = process.env.GBRAIN_ENABLED === 'true' || process.env.GSTACK_ENABLED === 'true';
+  if (!enabled) {
+    console.error(`'${commandName}' requires external services (GBrain, GStack).`);
+    console.error('');
+    console.error('For standalone use without services, try:');
+    console.error('  glearn analyze --file receipts.jsonl');
+    console.error('  glearn analyze --dir ./baselines/');
+    console.error('');
+    console.error('To enable services, set GBRAIN_ENABLED=true in .env and run ./start-all.sh');
+    process.exit(1);
+  }
+}
+
 const program = new Command();
 
 program
@@ -151,6 +165,7 @@ program
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
+    requireServices('run');
     const endpoints = sanitizeEndpointOptions(options);
     const cycles = parsePositiveInteger(options.cycles, '--cycles', 1, 100);
     const budgetUsd = parsePositiveNumber(options.budgetUsd, '--budget-usd');
@@ -367,6 +382,7 @@ program
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
+    requireServices('health');
     const endpoints = sanitizeEndpointOptions(options);
     const glearn = new GLearn({
       gbrainEndpoint: endpoints.gbrain,
@@ -411,6 +427,7 @@ program
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
+    requireServices('sync');
     const mode = options.full ? 'full' : 'incremental';
     const sync = new GStackGBrainSync();
 
@@ -458,6 +475,7 @@ program
       return;
     }
 
+    requireServices('eval');
     const endpoints = sanitizeEndpointOptions(options);
     const budgetUsd = parsePositiveNumber(options.budgetUsd, '--budget-usd');
     const glearn = new GLearn({
@@ -554,6 +572,7 @@ program
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
+    requireServices('stats');
     try {
       const gbrain = new GBrainIntegrationClient({
         endpoint: sanitizeCliUrl(options.gbrain, '--gbrain'),
@@ -820,6 +839,7 @@ program
         }
       }
 
+      requireServices('regress');
       const tolerance = sanitizeCliFloat(options.tolerance, '--tolerance', 0, 1);
 
       if (!options.baseline) {
