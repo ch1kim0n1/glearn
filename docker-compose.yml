@@ -1,0 +1,47 @@
+version: '3.8'
+
+# GLearn standalone compose.
+# GLearn depends on GBrain for pattern enrichment and source sync.
+
+services:
+  glearn:
+    build: .
+    ports:
+      - '3005:8080'
+    environment:
+      - NODE_ENV=production
+      - GLEARN_PORT=8080
+      - GBRAIN_ENDPOINT=http://gbrain:3000
+    volumes:
+      - glearn-data:/app/data
+    depends_on:
+      gbrain:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8080/health/live']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  gbrain:
+    build:
+      context: ../gbrain
+    ports:
+      - '3000:3000'
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - GBRAIN_DB_PATH=/data/gbrain.db
+    volumes:
+      - gbrain-data:/data
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3000/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  glearn-data:
+  gbrain-data:

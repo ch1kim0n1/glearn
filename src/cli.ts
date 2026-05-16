@@ -1288,6 +1288,7 @@ program
   .option('-o, --output <path>', 'Save markdown report to file')
   .option('-m, --model <model>', 'LLM model to use', 'claude-haiku-4-5-20251001')
   .option('--json', 'Output as JSON')
+  .option('--demo', 'Use demo data source for testing')
   .action(async (opts: any) => {
     await runAnalyzeCommand({
       file: opts.file,
@@ -1295,6 +1296,7 @@ program
       output: opts.output,
       model: opts.model,
       json: opts.json ?? false,
+      demo: opts.demo ?? false,
     });
   });
 

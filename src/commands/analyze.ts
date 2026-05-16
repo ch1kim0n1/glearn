@@ -17,6 +17,7 @@ export interface AnalyzeOptions {
   output?: string;
   model: string;
   json: boolean;
+  demo?: boolean;
 }
 
 interface Receipt {
