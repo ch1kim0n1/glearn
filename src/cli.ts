@@ -15,6 +15,7 @@ import {
   sanitizeCliString,
   sanitizeCliUrl,
 } from './core/security.js';
+import { runAnalyzeCommand } from './commands/analyze.js';
 
 const program = new Command();
 
@@ -1257,5 +1258,24 @@ _arguments '1:command:(${commands.join(' ')})' '*::option:(${options.join(' ')})
 
   return null;
 }
+
+// Analyze command — mine patterns from local JSONL receipts, no external services required
+program
+  .command('analyze')
+  .description('Mine patterns from local execution receipts (no external services required)')
+  .option('-f, --file <path>', 'JSONL receipt file to analyze')
+  .option('-d, --dir <path>', 'Directory of JSONL files to analyze')
+  .option('-o, --output <path>', 'Save markdown report to file')
+  .option('-m, --model <model>', 'LLM model to use', 'claude-haiku-4-5-20251001')
+  .option('--json', 'Output as JSON')
+  .action(async (opts: any) => {
+    await runAnalyzeCommand({
+      file: opts.file,
+      dir: opts.dir,
+      output: opts.output,
+      model: opts.model,
+      json: opts.json ?? false,
+    });
+  });
 
 program.parse();
