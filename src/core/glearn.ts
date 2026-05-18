@@ -38,11 +38,8 @@ import {
   GBrainIntegrationClient,
   GBrainIntegrationMode,
 } from './gbrain-integration.js';
-import { DriftDetector, DriftResult } from '@gstack/shared/core';
+import { DriftDetector, DriftResult, LatencyTracker, createPersistenceManager, type PersistenceConfig, HealthCheckResult } from './shared-utils.js';
 import { deriveReceiptVerdictFromDrift } from './drift-analysis.js';
-import { LatencyTracker } from '@gstack/shared/core';
-import { createPersistenceManager, type PersistenceConfig } from '@gstack/shared/core';
-import { HealthCheckResult } from '@gstack/shared/health';
 import { GLearnObservability, LocalAuditLogger, LocalLogger } from './observability.js';
 import { getDefaultSecretManager } from './security.js';
 

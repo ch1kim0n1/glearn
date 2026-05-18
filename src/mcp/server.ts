@@ -7,7 +7,7 @@ import {
 import { z } from 'zod';
 import { GLearn } from '../core/glearn.js';
 import { LocalAuditLogger, coreLogger } from '../core/observability.js';
-import { createAuthMiddleware, type AuthConfig, type AuthToken } from '@gstack/shared/core';
+import { createAuthMiddleware, type AuthConfig, type AuthToken } from '../core/shared-utils.js';
 import { getDefaultSecretManager, PermissionModel } from '../core/security.js';
 
 type McpScope = 'read' | 'write';
