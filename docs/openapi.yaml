@@ -1,0 +1,565 @@
+openapi: 3.0.3
+info:
+  title: GLearn API
+  description: |
+    GLearn is the meta-learning and reflective layer for the G-Stack. It mines patterns from
+    execution receipts and cross-tool data, generates improvement proposals, evaluates those proposals
+    counterfactually, and keeps humans or owning tools in control of changes.
+  version: 1.0.0
+  contact:
+    name: G-Stack Team
+    url: https://github.com/gstack/glearn
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:3002
+    description: Local development server
+  - url: https://api.glearn.gstack.dev
+    description: Production server
+
+tags:
+  - name: Learning
+    description: Pattern mining and proposal generation
+  - name: Patterns
+    description: Pattern management
+  - name: Proposals
+    description: Proposal management
+  - name: Health
+    description: Health and status endpoints
+  - name: Metrics
+    description: Observability and metrics
+
+paths:
+  /health/live:
+    get:
+      summary: Liveness probe
+      description: Returns 200 if the service is alive
+      operationId: getLiveness
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          description: Service is not healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /health/ready:
+    get:
+      summary: Readiness probe
+      description: Returns 200 if the service is ready to accept traffic
+      operationId: getReadiness
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessStatus'
+        '503':
+          description: Service is not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /learning/run:
+    post:
+      summary: Run a learning cycle
+      description: Execute pattern mining and proposal generation across configured data sources
+      operationId: runLearningCycle
+      tags:
+        - Learning
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LearningRequest'
+      responses:
+        '200':
+          description: Learning cycle completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LearningResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /patterns:
+    get:
+      summary: List patterns
+      description: Retrieve mined patterns with optional filtering
+      operationId: listPatterns
+      tags:
+        - Patterns
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [temporal, semantic, outcome, coverage, drift]
+        - name: confidence
+          in: query
+          schema:
+            type: number
+            minimum: 0
+            maximum: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: List of patterns
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  patterns:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Pattern'
+                  total:
+                    type: integer
+
+  /patterns/{patternId}:
+    get:
+      summary: Get pattern details
+      description: Retrieve detailed information about a specific pattern
+      operationId: getPattern
+      tags:
+        - Patterns
+      parameters:
+        - name: patternId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Pattern details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pattern'
+        '404':
+          description: Pattern not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /proposals:
+    get:
+      summary: List proposals
+      description: Retrieve generated proposals with optional filtering
+      operationId: listProposals
+      tags:
+        - Proposals
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, approved, rejected, applied]
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: List of proposals
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  proposals:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Proposal'
+                  total:
+                    type: integer
+
+  /proposals/{proposalId}:
+    get:
+      summary: Get proposal details
+      description: Retrieve detailed information about a specific proposal
+      operationId: getProposal
+      tags:
+        - Proposals
+      parameters:
+        - name: proposalId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Proposal details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Proposal'
+        '404':
+          description: Proposal not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /proposals/{proposalId}/approve:
+    post:
+      summary: Approve a proposal
+      description: Mark a proposal as approved for application
+      operationId: approveProposal
+      tags:
+        - Proposals
+      parameters:
+        - name: proposalId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Proposal approved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Proposal'
+        '404':
+          description: Proposal not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Proposal already processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /proposals/{proposalId}/reject:
+    post:
+      summary: Reject a proposal
+      description: Mark a proposal as rejected
+      operationId: rejectProposal
+      tags:
+        - Proposals
+      parameters:
+        - name: proposalId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Proposal rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Proposal'
+        '404':
+          description: Proposal not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /metrics:
+    get:
+      summary: Get metrics
+      description: Return Prometheus-compatible metrics
+      operationId: getMetrics
+      tags:
+        - Metrics
+      responses:
+        '200':
+          description: Metrics in Prometheus format
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /eval:
+    post:
+      summary: Run evaluation corpus
+      description: Execute evaluation tests against baseline metrics
+      operationId: runEvaluation
+      tags:
+        - Learning
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvaluationRequest'
+      responses:
+        '200':
+          description: Evaluation completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvaluationResponse'
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+        timestamp:
+          type: string
+          format: date-time
+
+    ReadinessStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]
+        checks:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [healthy, unhealthy]
+        timestamp:
+          type: string
+          format: date-time
+
+    LearningRequest:
+      type: object
+      properties:
+        counterfactual:
+          type: boolean
+          description: Run in counterfactual evaluation mode
+        dataSources:
+          type: array
+          items:
+            type: string
+          description: Data sources to mine
+        patternTypes:
+          type: array
+          items:
+            type: string
+            enum: [temporal, semantic, outcome, coverage, drift]
+        proposalTypes:
+          type: array
+          items:
+            type: string
+        config:
+          type: object
+          additionalProperties: true
+
+    LearningResponse:
+      type: object
+      properties:
+        runId:
+          type: string
+        status:
+          type: string
+          enum: [running, completed, failed]
+        patterns:
+          type: array
+          items:
+            $ref: '#/components/schemas/Pattern'
+        proposals:
+          type: array
+          items:
+            $ref: '#/components/schemas/Proposal'
+        metrics:
+          type: object
+          additionalProperties: true
+        durationMs:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+
+    Pattern:
+      type: object
+      properties:
+        patternId:
+          type: string
+        type:
+          type: string
+          enum: [temporal, semantic, outcome, coverage, drift]
+        description:
+          type: string
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        evidence:
+          type: array
+          items:
+            type: object
+        source:
+          type: string
+        tool:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    Proposal:
+      type: object
+      properties:
+        proposalId:
+          type: string
+        type:
+          type: string
+        description:
+          type: string
+        patternId:
+          type: string
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        estimatedImpact:
+          type: string
+        counterfactualResult:
+          type: object
+          properties:
+            baseline:
+              type: number
+            projected:
+              type: number
+            improvement:
+              type: number
+        status:
+          type: string
+          enum: [pending, approved, rejected, applied]
+        appliedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+
+    EvaluationRequest:
+      type: object
+      required:
+        - corpus
+      properties:
+        corpus:
+          type: string
+          description: Name of evaluation corpus
+        baseline:
+          type: string
+          description: Baseline version to compare against
+        config:
+          type: object
+          additionalProperties: true
+
+    EvaluationResponse:
+      type: object
+      properties:
+        evaluationId:
+          type: string
+        corpus:
+          type: string
+        baseline:
+          type: string
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              metric:
+                type: string
+              baseline:
+                type: number
+              current:
+                type: number
+              delta:
+                type: number
+              passed:
+                type: boolean
+        summary:
+          type: object
+          properties:
+            total:
+              type: integer
+            passed:
+              type: integer
+            failed:
+              type: integer
+        durationMs:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+        requestId:
+          type: string
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+security:
+  - bearerAuth: []
