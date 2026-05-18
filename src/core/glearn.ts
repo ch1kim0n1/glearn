@@ -260,7 +260,11 @@ export class GLearn {
     }
     
     // Initialize persistence for patterns, proposals, and metrics
-    const initialState = {
+    const initialState: {
+      patterns: Pattern[];
+      proposals: Proposal[];
+      escalationMetrics: EscalationMetrics;
+    } = {
       patterns: [],
       proposals: [],
       escalationMetrics: this.escalationMetrics,

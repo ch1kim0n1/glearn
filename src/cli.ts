@@ -703,27 +703,10 @@ program
         process.exit(0);
       }
 
-      const { ReplayManager } = await import('../../shared/src/core/replay-manager.js');
-      const replayManager = new ReplayManager(sanitizeCliPath(options.corpus, '--corpus'));
-      
-      const result = await replayManager.retrieve(replayId);
-      
-      if (!result.found) {
-        console.error(chalk.red(`[GLearn] Hash not found in corpus: ${replayId}`));
-        process.exit(1);
-      }
-
-      if (options.json) {
-        console.log(JSON.stringify(result, null, 2));
-      } else if (!options.quiet) {
-        console.log(chalk.blue.bold(`[GLearn] Replaying hash: ${replayId}`));
-        console.log(chalk.gray(`Tool: ${result.metadata.tool}`));
-        console.log(chalk.gray(`Timestamp: ${result.metadata.timestamp}`));
-        console.log(chalk.gray(`Task: ${result.metadata.task || 'N/A'}`));
-        console.log(chalk.green('\nContent:'));
-        console.log(result.content);
-      }
-      process.exit(0);
+      // Hash-based corpus replay was provided by @gstack/shared and is no longer available locally.
+      void options;
+      console.error(chalk.red(`[GLearn] Hash-based corpus replay is not available in this build: ${replayId}`));
+      process.exit(1);
     } catch (error) {
       console.error(chalk.red('[GLearn] Replay failed:'), error);
       process.exit(1);
