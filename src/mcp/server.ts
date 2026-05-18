@@ -4,6 +4,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
 import { GLearn } from '../core/glearn.js';
 import { LocalAuditLogger, coreLogger } from '../core/observability.js';
 import { createAuthMiddleware, type AuthConfig, type AuthToken } from '@gstack/shared/core';
@@ -399,11 +400,40 @@ class GLearnMCPServer {
     };
   }
 
+  private static readonly RunArgsSchema = z.object({
+    run_counterfactual: z.boolean().optional(),
+  });
+
+  private static readonly PatternsArgsSchema = z.object({
+    type: z.string().optional(),
+    tool: z.string().optional(),
+  });
+
+  private static readonly ApproveArgsSchema = z.object({
+    proposal_id: z.string().min(1),
+    reviewer: z.string().optional(),
+  });
+
+  private static readonly GetReceiptsArgsSchema = z.object({
+    limit: z.number().int().positive().max(1000).optional(),
+    offset: z.number().int().nonnegative().max(10000).optional(),
+    startDate: z.string().datetime().optional(),
+    endDate: z.string().datetime().optional(),
+  });
+
+  private static readonly GetDriftArgsSchema = z.object({
+    metricName: z.string().optional(),
+  });
+
   private async handleRun(args: {
     run_counterfactual?: boolean;
   }) {
+    const parsed = GLearnMCPServer.RunArgsSchema.safeParse(args);
+    if (!parsed.success) {
+      return this.errorResponse(`Invalid request: ${JSON.stringify(parsed.error.flatten())}`);
+    }
     const result = await this.glearn.runLearningCycle({
-      run_counterfactual: args.run_counterfactual,
+      run_counterfactual: parsed.data.run_counterfactual,
     });
 
     return {
@@ -416,7 +446,7 @@ class GLearnMCPServer {
             patterns_found: result.patterns_found,
             proposals_generated: result.proposals_generated,
             evaluations_completed: result.evaluations_completed,
-            duration_ms: result.completed_at 
+            duration_ms: result.completed_at
               ? new Date(result.completed_at).getTime() - new Date(result.started_at).getTime()
               : 0,
             error_message: result.error_message,
@@ -424,20 +454,24 @@ class GLearnMCPServer {
         },
       ],
     };
-  }
+  } 
 
   private async handlePatterns(args: {
     type?: string;
     tool?: string;
   } = {}) {
-    const patterns = this.glearn.getPatterns();
-    
-    let filtered = patterns;
-    if (args.type) {
-      filtered = filtered.filter(p => p.pattern_type === args.type);
+    const parsed = GLearnMCPServer.PatternsArgsSchema.safeParse(args);
+    if (!parsed.success) {
+      return this.errorResponse(`Invalid request: ${JSON.stringify(parsed.error.flatten())}`);
     }
-    if (args.tool) {
-      filtered = filtered.filter(p => args.tool ? p.source_tools.includes(args.tool) : true);
+    const patterns = this.glearn.getPatterns();
+
+    let filtered = patterns;
+    if (parsed.data.type) {
+      filtered = filtered.filter(p => p.pattern_type === parsed.data.type);
+    }
+    if (parsed.data.tool) {
+      filtered = filtered.filter(p => parsed.data.tool ? p.source_tools.includes(parsed.data.tool) : true);
     }
 
     return {
@@ -468,9 +502,13 @@ class GLearnMCPServer {
     proposal_id: string;
     reviewer?: string;
   }) {
+    const parsed = GLearnMCPServer.ApproveArgsSchema.safeParse(args);
+    if (!parsed.success) {
+      return this.errorResponse(`Invalid request: ${JSON.stringify(parsed.error.flatten())}`);
+    }
     const result = this.glearn.approveProposal(
-      args.proposal_id,
-      args.reviewer || 'user'
+      parsed.data.proposal_id,
+      parsed.data.reviewer || 'user'
     );
 
     return {
@@ -502,7 +540,11 @@ class GLearnMCPServer {
     startDate?: string;
     endDate?: string;
   } = {}) {
-    const receipts = await this.glearn.getReceipts(args);
+    const parsed = GLearnMCPServer.GetReceiptsArgsSchema.safeParse(args);
+    if (!parsed.success) {
+      return this.errorResponse(`Invalid request: ${JSON.stringify(parsed.error.flatten())}`);
+    }
+    const receipts = await this.glearn.getReceipts(parsed.data);
     return {
       content: [
         {
@@ -516,7 +558,11 @@ class GLearnMCPServer {
   private async handleGetDrift(args: {
     metricName?: string;
   } = {}) {
-    const drift = await this.glearn.getDrift(args.metricName);
+    const parsed = GLearnMCPServer.GetDriftArgsSchema.safeParse(args);
+    if (!parsed.success) {
+      return this.errorResponse(`Invalid request: ${JSON.stringify(parsed.error.flatten())}`);
+    }
+    const drift = await this.glearn.getDrift(parsed.data.metricName);
     return {
       content: [
         {

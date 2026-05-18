@@ -23,10 +23,13 @@ services:
       timeout: 10s
       retries: 3
     restart: unless-stopped
+    mem_limit: 512m
+    mem_reservation: 256m
+    cpus: 1.0
 
   gbrain:
     build:
-      context: ../gbrain
+      context: ./gbrain
     ports:
       - '3000:3000'
     environment:
@@ -41,6 +44,9 @@ services:
       timeout: 10s
       retries: 3
     restart: unless-stopped
+    mem_limit: 512m
+    mem_reservation: 256m
+    cpus: 1.0
 
 volumes:
   glearn-data:

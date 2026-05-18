@@ -1,6 +1,6 @@
 {
   "name": "glearn",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "description": "Meta-learning and reflective layer for the G-Stack",
   "main": "./dist/core/index.js",
   "types": "./dist/core/index.d.ts",
@@ -89,6 +89,7 @@
     "@typescript-eslint/eslint-plugin": "^6.0.0",
     "@typescript-eslint/parser": "^6.0.0",
     "eslint": "^8.0.0",
+    "eslint-plugin-security": "^3.0.1",
     "jest": "^29.7.0",
     "prettier": "^3.0.0",
     "ts-jest": "^29.4.9",

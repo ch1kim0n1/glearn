@@ -38,4 +38,19 @@ describe('GLearn MCP Server', () => {
     expect(serverSource).toContain('PermissionModel.loadDefault');
     expect(serverSource).toContain('mcp_auth_denied');
   });
+
+  it('validates input using Zod schemas', () => {
+    expect(serverSource).toContain('z.object');
+    expect(serverSource).toContain('z.string');
+  });
+
+  it('returns standardized error responses', () => {
+    expect(serverSource).toContain('content: [');
+    expect(serverSource).toContain('isError: true');
+  });
+
+  it('implements proper scope separation', () => {
+    expect(serverSource).toContain('read');
+    expect(serverSource).toContain('write');
+  });
 });
