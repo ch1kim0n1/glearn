@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "glearn"
+name = "glearn-cli"
 version = "0.5.0"
 description = "Meta-learning and reflective layer for the G-Stack (Node.js CLI, installable via pip)"
 readme = "README.md"

@@ -4,13 +4,14 @@
 npm install glearn
 ```
 
-## Install from PyPI (`pip install glearn`)
+## Install from PyPI (`pip install glearn-cli`)
 
-GLearn's CLI is also distributed as a Python package that wraps the bundled
-Node.js CLI, so you can install the `glearn` command with `pip`:
+GLearn's CLI is also distributed as a Python package (named `glearn-cli`, since
+`glearn` is taken on PyPI) that wraps the bundled Node.js CLI, so you can install
+the `glearn` command with `pip`:
 
 ```bash
-pip install glearn
+pip install glearn-cli
 glearn --help
 glearn --version
 ```
