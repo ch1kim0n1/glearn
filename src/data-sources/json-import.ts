@@ -12,7 +12,12 @@ export class JSONImportDataSource {
     const fs = await import('fs/promises');
     
     const content = await fs.readFile(this.config.filePath, 'utf-8');
-    const records = JSON.parse(content);
+    let records: any;
+    try {
+      records = JSON.parse(content);
+    } catch (error) {
+      throw new Error(`Failed to parse JSON file ${this.config.filePath}: ${error instanceof Error ? error.message : String(error)}`);
+    }
     const patterns = Array.isArray(records) ? records : [records];
 
     return patterns.map((record: any) => ({

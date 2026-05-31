@@ -153,7 +153,12 @@ export class ReceiptRegistry {
   private async readSchema(): Promise<ReceiptSchemaMetadata | null> {
     try {
       const content = await fs.readFile(this.schemaPath, 'utf8');
-      return JSON.parse(content);
+      try {
+        return JSON.parse(content);
+      } catch (parseError) {
+        coreLogger.error('Failed to parse receipt schema JSON', { error: parseError, path: this.schemaPath });
+        throw new Error(`Invalid JSON in receipt schema: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw error;
@@ -205,7 +210,13 @@ export class ReceiptRegistry {
       const lines = content.trim().split('\n').filter((l: string) => l);
       if (lines.length === 0) return null;
       const lastLine = lines[lines.length - 1];
-      const receipt = this.migrateReceipt(JSON.parse(lastLine));
+      let receipt: any;
+      try {
+        receipt = this.migrateReceipt(JSON.parse(lastLine));
+      } catch (error) {
+        coreLogger.error('Failed to parse receipt JSON', { error, line: lastLine.substring(0, 100) });
+        throw new Error(`Invalid receipt JSON: ${error instanceof Error ? error.message : String(error)}`);
+      }
 
       // Verify signature if present
       if (receipt._signature && this.signatureKey) {
@@ -232,7 +243,13 @@ export class ReceiptRegistry {
         const content = await fs.readFile(file, 'utf8');
         const lines = content.trim().split('\n').filter((l: string) => l);
         for (const line of lines) {
-          const receipt = this.migrateReceipt(JSON.parse(line));
+          let receipt: any;
+          try {
+            receipt = this.migrateReceipt(JSON.parse(line));
+          } catch (error) {
+            coreLogger.error('Failed to parse receipt JSON', { error, line: line.substring(0, 100) });
+            continue; // Skip malformed lines
+          }
           const timestamp = new Date(receipt.timestamp);
           if (timestamp < start || timestamp > end) {
             continue;
@@ -263,7 +280,13 @@ export class ReceiptRegistry {
       if (stat.isFile()) {
         const content = await fs.readFile(identifier, 'utf8');
         const line = content.trim().split('\n').filter(Boolean).pop();
-        return line ? this.migrateReceipt(JSON.parse(line)) : null;
+        if (!line) return null;
+        try {
+          return this.migrateReceipt(JSON.parse(line));
+        } catch (error) {
+          coreLogger.error('Failed to parse receipt JSON', { error, line: line.substring(0, 100), identifier });
+          throw new Error(`Invalid receipt JSON in file ${identifier}: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
     } catch {
       // Identifier is not a readable path; search registry files below.

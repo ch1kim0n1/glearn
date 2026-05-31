@@ -30,10 +30,24 @@ export class ConfigLoader {
       try {
         const content = readFileSync(this.options.path, 'utf-8');
         if (this.options.format === 'json') {
-          Object.assign(config, JSON.parse(content));
+          Object.assign(config, (() => {
+            try {
+              return JSON.parse(content);
+            } catch (parseError) {
+              logger.error('Failed to parse configuration JSON', { error: parseError, path: this.options.path });
+              throw new Error(`Invalid configuration JSON: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
+            }
+          })());
         } else {
           // YAML parsing would go here
-          Object.assign(config, JSON.parse(content));
+          Object.assign(config, (() => {
+            try {
+              return JSON.parse(content);
+            } catch (parseError) {
+              logger.error('Failed to parse configuration JSON', { error: parseError, path: this.options.path });
+              throw new Error(`Invalid configuration JSON: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
+            }
+          })());
         }
         logger.info('Configuration loaded from file', { path: this.options.path });
       } catch (error) {

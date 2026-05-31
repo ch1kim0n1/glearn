@@ -2,8 +2,10 @@
  * Utility functions for GLearn
  */
 
+import { randomBytes } from 'crypto';
+
 export function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  return `${Date.now()}-${randomBytes(8).toString('hex')}`;
 }
 
 export function hashString(str: string): string {

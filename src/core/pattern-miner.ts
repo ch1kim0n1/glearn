@@ -16,6 +16,13 @@ import { LLMClient } from './llm-client.js';
 import { coreLogger } from './observability.js';
 
 /**
+ * Helper function to safely divide numbers with zero check
+ */
+function safeDivide(numerator: number, denominator: number, fallback = 0): number {
+  return denominator !== 0 ? numerator / denominator : fallback;
+}
+
+/**
  * Pattern Miner
  *
  * Responsibilities:
@@ -182,9 +189,9 @@ export class PatternMiner {
     summary.push(`Tool: ${tool}`);
 
     if (data.run_records) {
-      const avgCost = data.run_records.reduce((sum: number, r: any) => sum + (r.total_cost_usd || 0), 0) / data.run_records.length;
-      const successRate = data.run_records.filter((r: any) => r.status === 'completed').length / data.run_records.length;
-      const avgLatency = data.run_records.reduce((sum: number, r: any) => sum + (r.wall_time_ms || 0), 0) / data.run_records.length;
+      const avgCost = safeDivide(data.run_records.reduce((sum: number, r: any) => sum + (r.total_cost_usd || 0), 0), data.run_records.length);
+      const successRate = safeDivide(data.run_records.filter((r: any) => r.status === 'completed').length, data.run_records.length);
+      const avgLatency = safeDivide(data.run_records.reduce((sum: number, r: any) => sum + (r.wall_time_ms || 0), 0), data.run_records.length);
       summary.push(`Average cost: $${avgCost.toFixed(4)}`);
       summary.push(`Success rate: ${(successRate * 100).toFixed(1)}%`);
       summary.push(`Average latency: ${(avgLatency / 1000).toFixed(2)}s`);
@@ -192,21 +199,21 @@ export class PatternMiner {
     }
 
     if (data.runs) {
-      const avgCost = data.runs.reduce((sum: number, r: any) => sum + (r.cost_usd || 0), 0) / data.runs.length;
-      const successRate = data.runs.filter((r: any) => r.success).length / data.runs.length;
+      const avgCost = safeDivide(data.runs.reduce((sum: number, r: any) => sum + (r.cost_usd || 0), 0), data.runs.length);
+      const successRate = safeDivide(data.runs.filter((r: any) => r.success).length, data.runs.length);
       summary.push(`Average cost: $${avgCost.toFixed(4)}`);
       summary.push(`Success rate: ${(successRate * 100).toFixed(1)}%`);
       summary.push(`Run count: ${data.runs.length}`);
     }
 
     if (data.verdicts) {
-      const passRate = data.verdicts.filter((v: any) => v.overall === 'pass').length / data.verdicts.length;
+      const passRate = safeDivide(data.verdicts.filter((v: any) => v.overall === 'pass').length, data.verdicts.length);
       summary.push(`Pass rate: ${(passRate * 100).toFixed(1)}%`);
       summary.push(`Verdict count: ${data.verdicts.length}`);
     }
 
     if (data.vulnerability_states) {
-      const avgVuln = data.vulnerability_states.reduce((sum: number, s: any) => sum + (s.overall_vulnerability || 0), 0) / data.vulnerability_states.length;
+      const avgVuln = safeDivide(data.vulnerability_states.reduce((sum: number, s: any) => sum + (s.overall_vulnerability || 0), 0), data.vulnerability_states.length);
       summary.push(`Average vulnerability: ${avgVuln.toFixed(3)}`);
       summary.push(`State count: ${data.vulnerability_states.length}`);
     }
@@ -234,10 +241,10 @@ export class PatternMiner {
 
     // Feature 1: Average cost
     if (data.run_records) {
-      const avgCost = data.run_records.reduce((sum: number, r: any) => sum + (r.total_cost_usd || 0), 0) / data.run_records.length;
+      const avgCost = safeDivide(data.run_records.reduce((sum: number, r: any) => sum + (r.total_cost_usd || 0), 0), data.run_records.length);
       features.push(avgCost);
     } else if (data.runs) {
-      const avgCost = data.runs.reduce((sum: number, r: any) => sum + (r.total_cost_usd || 0), 0) / data.runs.length;
+      const avgCost = safeDivide(data.runs.reduce((sum: number, r: any) => sum + (r.total_cost_usd || 0), 0), data.runs.length);
       features.push(avgCost);
     } else {
       features.push(0);
@@ -245,13 +252,13 @@ export class PatternMiner {
 
     // Feature 2: Success rate
     if (data.run_records) {
-      const successRate = data.run_records.filter((r: any) => r.status === 'completed').length / data.run_records.length;
+      const successRate = safeDivide(data.run_records.filter((r: any) => r.status === 'completed').length, data.run_records.length);
       features.push(successRate);
     } else if (data.runs) {
-      const successRate = data.runs.filter((r: any) => r.success).length / data.runs.length;
+      const successRate = safeDivide(data.runs.filter((r: any) => r.success).length, data.runs.length);
       features.push(successRate);
     } else if (data.verdicts) {
-      const successRate = data.verdicts.filter((v: any) => v.overall === 'pass').length / data.verdicts.length;
+      const successRate = safeDivide(data.verdicts.filter((v: any) => v.overall === 'pass').length, data.verdicts.length);
       features.push(successRate);
     } else {
       features.push(0);
@@ -259,10 +266,10 @@ export class PatternMiner {
 
     // Feature 3: Average latency
     if (data.run_records) {
-      const avgLatency = data.run_records.reduce((sum: number, r: any) => sum + (r.wall_time_ms || 0), 0) / data.run_records.length;
+      const avgLatency = safeDivide(data.run_records.reduce((sum: number, r: any) => sum + (r.wall_time_ms || 0), 0), data.run_records.length);
       features.push(avgLatency / 1000); // Convert to seconds
     } else if (data.runs) {
-      const avgLatency = data.runs.reduce((sum: number, r: any) => sum + (r.wall_time_ms || 0), 0) / data.runs.length;
+      const avgLatency = safeDivide(data.runs.reduce((sum: number, r: any) => sum + (r.wall_time_ms || 0), 0), data.runs.length);
       features.push(avgLatency / 1000);
     } else {
       features.push(0);
@@ -270,7 +277,7 @@ export class PatternMiner {
 
     // Feature 4: Token usage (if available)
     if (data.run_records) {
-      const avgTokens = data.run_records.reduce((sum: number, r: any) => sum + (r.trace?.total_tokens || 0), 0) / data.run_records.length;
+      const avgTokens = safeDivide(data.run_records.reduce((sum: number, r: any) => sum + (r.trace?.total_tokens || 0), 0), data.run_records.length);
       features.push(avgTokens);
     } else {
       features.push(0);
@@ -278,7 +285,7 @@ export class PatternMiner {
 
     // Feature 5: Vulnerability score (for GToM)
     if (data.vulnerability_states) {
-      const avgVuln = data.vulnerability_states.reduce((sum: number, s: any) => sum + (s.overall_vulnerability || 0), 0) / data.vulnerability_states.length;
+      const avgVuln = safeDivide(data.vulnerability_states.reduce((sum: number, s: any) => sum + (s.overall_vulnerability || 0), 0), data.vulnerability_states.length);
       features.push(avgVuln);
     } else {
       features.push(0);
@@ -344,7 +351,7 @@ export class PatternMiner {
               newCentroid[j] += emb.embedding[j];
             }
           }
-          centroids[i] = newCentroid.map(v => v / clusters[i].length);
+          centroids[i] = newCentroid.map(v => safeDivide(v, clusters[i].length));
         }
       }
     }
@@ -427,8 +434,8 @@ export class PatternMiner {
   private pearson(xs: number[], ys: number[]): number {
     const n = Math.min(xs.length, ys.length);
     if (n < 3) return 0;
-    const mx = xs.slice(0, n).reduce((a, b) => a + b, 0) / n;
-    const my = ys.slice(0, n).reduce((a, b) => a + b, 0) / n;
+    const mx = safeDivide(xs.slice(0, n).reduce((a, b) => a + b, 0), n);
+    const my = safeDivide(ys.slice(0, n).reduce((a, b) => a + b, 0), n);
     let num = 0, dx = 0, dy = 0;
     for (let i = 0; i < n; i++) {
       const ex = xs[i] - mx;
@@ -505,8 +512,8 @@ export class PatternMiner {
           const recent = gtomData.vulnerability_states.slice(-5);
           const baseline = gtomData.vulnerability_states.slice(0, 5);
 
-          const recentAvg = recent.reduce((sum, s) => sum + s.overall_vulnerability, 0) / recent.length;
-          const baselineAvg = baseline.reduce((sum, s) => sum + s.overall_vulnerability, 0) / baseline.length;
+          const recentAvg = safeDivide(recent.reduce((sum, s) => sum + s.overall_vulnerability, 0), recent.length);
+          const baselineAvg = safeDivide(baseline.reduce((sum, s) => sum + s.overall_vulnerability, 0), baseline.length);
 
           const drift = Math.abs(recentAvg - baselineAvg);
           if (drift > 0.2) {
@@ -540,8 +547,8 @@ export class PatternMiner {
           const recent = orchData.run_records.slice(-5);
           const baseline = orchData.run_records.slice(0, 5);
 
-          const recentAvgCost = recent.reduce((sum, r) => sum + r.total_cost_usd, 0) / recent.length;
-          const baselineAvgCost = baseline.reduce((sum, r) => sum + r.total_cost_usd, 0) / baseline.length;
+          const recentAvgCost = safeDivide(recent.reduce((sum, r) => sum + r.total_cost_usd, 0), recent.length);
+          const baselineAvgCost = safeDivide(baseline.reduce((sum, r) => sum + r.total_cost_usd, 0), baseline.length);
 
           const drift = (recentAvgCost - baselineAvgCost) / baselineAvgCost;
           if (Math.abs(drift) > 0.3) {
@@ -581,7 +588,7 @@ export class PatternMiner {
     // Check for GMirror coverage gaps
     const mirrorData = this.dataStore.get('GMirror') as GMirrorData | undefined;
     if (mirrorData) {
-      const failureRate = mirrorData.verdicts.filter(v => v.overall === 'fail').length / mirrorData.verdicts.length;
+      const failureRate = safeDivide(mirrorData.verdicts.filter(v => v.overall === 'fail').length, mirrorData.verdicts.length);
 
       if (failureRate > 0.3) {
         const description = await this.generatePatternDescription({
@@ -723,7 +730,7 @@ export class PatternMiner {
 
     const participantABids = bids.filter(event => event.participant === 'a').length;
     const participantBBids = bids.length - participantABids;
-    const aRatio = participantABids / bids.length;
+    const aRatio = safeDivide(participantABids, bids.length);
     const dominantParticipant = aRatio >= 0.5 ? 'a' : 'b';
     const dominantRatio = Math.max(aRatio, 1 - aRatio);
 
@@ -764,7 +771,7 @@ export class PatternMiner {
       pattern_id: uuidv4(),
       pattern_type: 'repair_window',
       description: 'Successful repair attempts recur often enough to preserve a repair window for this dyad.',
-      confidence: Math.min(0.9, successes.length / repairs.length),
+      confidence: Math.min(0.9, safeDivide(successes.length, repairs.length)),
       evidence: [
         `Dyad: ${dyadId}`,
         `Repair attempts: ${repairs.length}`,
@@ -775,7 +782,7 @@ export class PatternMiner {
       observation_count: repairs.length,
       metadata: {
         dyad_id: dyadId,
-        success_rate: successes.length / repairs.length,
+        success_rate: safeDivide(successes.length, repairs.length),
       },
     }];
   }
@@ -862,8 +869,8 @@ export class PatternMiner {
     const n = Math.min(x.length, y.length);
     if (n < 2) return 0;
 
-    const meanX = x.slice(0, n).reduce((a, b) => a + b, 0) / n;
-    const meanY = y.slice(0, n).reduce((a, b) => a + b, 0) / n;
+    const meanX = safeDivide(x.slice(0, n).reduce((a, b) => a + b, 0), n);
+    const meanY = safeDivide(y.slice(0, n).reduce((a, b) => a + b, 0), n);
 
     let numerator = 0;
     let denomX = 0;
@@ -880,7 +887,7 @@ export class PatternMiner {
     const denominator = Math.sqrt(denomX) * Math.sqrt(denomY);
     if (denominator === 0) return 0;
 
-    return numerator / denominator;
+    return safeDivide(numerator, denominator);
   }
 
   /**

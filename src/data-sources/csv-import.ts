@@ -31,7 +31,14 @@ export class CSVImportDataSource {
       first_observed: record[this.config.createdAtColumn || 'created_at'] || new Date().toISOString(),
       observation_count: 1,
       metadata: this.config.metadataColumn && record[this.config.metadataColumn]
-        ? JSON.parse(record[this.config.metadataColumn])
+        ? (() => {
+            try {
+              return JSON.parse(record[this.config.metadataColumn]);
+            } catch (error) {
+              console.warn(`Failed to parse metadata JSON for record: ${error instanceof Error ? error.message : String(error)}`);
+              return { source: 'csv-import', context: record[this.config.contextColumn || 'context'] || '' };
+            }
+          })()
         : { source: 'csv-import', context: record[this.config.contextColumn || 'context'] || '' },
     }));
   }

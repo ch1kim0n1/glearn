@@ -407,7 +407,14 @@ export class LLMClient {
     }
 
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.metricsPersistencePath, 'utf8'));
+      const content = fs.readFileSync(this.metricsPersistencePath, 'utf8');
+      let parsed: any;
+      try {
+        parsed = JSON.parse(content);
+      } catch (parseError) {
+        this.logger.error('Failed to parse metrics JSON', { error: parseError, path: this.metricsPersistencePath });
+        return;
+      }
       this.totalCostUsd = typeof parsed.totalCostUsd === 'number' ? parsed.totalCostUsd : 0;
       this.totalTokens = typeof parsed.totalTokens === 'number' ? parsed.totalTokens : 0;
       this.callCount = typeof parsed.callCount === 'number' ? parsed.callCount : 0;

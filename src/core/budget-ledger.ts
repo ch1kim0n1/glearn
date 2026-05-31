@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { randomBytes } from 'crypto';
 
 export interface BudgetReservation {
   id: string;
@@ -73,7 +74,7 @@ export class BudgetLedger {
 
     const now = new Date();
     const reservation: BudgetReservation = {
-      id: `res_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+      id: `res_${Date.now()}_${randomBytes(8).toString('hex')}`,
       operation,
       reserved_usd: amountUsd,
       committed_usd: 0,

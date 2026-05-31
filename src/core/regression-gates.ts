@@ -26,7 +26,13 @@ export async function loadRegressionBaselines(path: string): Promise<RegressionB
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
-    .map(line => JSON.parse(line) as RegressionBaseline);
+    .map(line => {
+      try {
+        return JSON.parse(line) as RegressionBaseline;
+      } catch (error) {
+        throw new Error(`Failed to parse regression baseline line: ${line}. Error: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
 }
 
 export function evaluateRegressionGates(
