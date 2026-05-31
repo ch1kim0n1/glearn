@@ -4,6 +4,33 @@
 npm install glearn
 ```
 
+## Install from PyPI (`pip install glearn`)
+
+GLearn's CLI is also distributed as a Python package that wraps the bundled
+Node.js CLI, so you can install the `glearn` command with `pip`:
+
+```bash
+pip install glearn
+glearn --help
+glearn --version
+```
+
+**Prerequisite:** Node.js **>= 18** must be installed and on your `PATH`
+(get it from [nodejs.org](https://nodejs.org/)). The Python package contains
+no Python logic of its own — it locates your Node.js runtime and runs the
+bundled JavaScript CLI, forwarding all arguments and the exit code.
+
+Notes:
+
+- **Optional SQLite persistence.** Persistent state in `~/.glearn/glearn.db`
+  relies on the native `better-sqlite3` module, which is *not* bundled (it
+  cannot be installed by `pip`). The CLI starts and runs without it; commands
+  that require on-disk persistence will report that it is unavailable. To enable
+  it, install the npm package alongside (`npm install -g glearn`) or run from a
+  source checkout where `better-sqlite3` has been compiled.
+- **Token counting** uses a bundled `tiktoken` WASM module and falls back to a
+  character-based estimate if it cannot load.
+
 ```typescript
 import { LearnSDK } from 'glearn';
 const learn = new LearnSDK({ apiKey: process.env.ANTHROPIC_API_KEY });
