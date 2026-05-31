@@ -11,14 +11,13 @@ export { ReceiptRegistry } from './receipt-registry.js';
 export { LLMClient } from './llm-client.js';
 export { GStackGBrainSync } from './gstack-gbrain-sync.js';
 export type { SyncMode, SyncOptions, SyncResult, SyncStageResult, GBrainSourceAttachment } from './gstack-gbrain-sync.js';
-export { DriftDetector } from './drift-detector.js';
-export type { DriftMetrics } from './drift-detector.js';
+export { DriftDetector } from './shared-utils.js';
+export type { DriftResult, DriftDetectorConfig } from './shared-utils.js';
 export { CostLedger } from './cost-ledger.js';
 export type { CostEntry } from './cost-ledger.js';
 export { MultiModelManager } from './multi-model-manager.js';
 export type { MultiModelConfig } from './multi-model-manager.js';
-export { LatencyTracker } from './latency-tracker.js';
-export type { LatencyEntry } from './latency-tracker.js';
+export { LatencyTracker } from './shared-utils.js';
 export { AuditLogger } from './audit-logger.js';
 export type { AuditEntry } from './audit-logger.js';
 

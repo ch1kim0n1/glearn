@@ -1,5 +1,6 @@
 import { IncomingMessage, Server as HttpServer, ServerResponse, createServer } from 'http';
 import { getDefaultSecretManager } from './security.js';
+import { safeEqual } from '../security/crypto.js';
 
 export interface HealthCheckResult {
   status: 'healthy' | 'degraded' | 'unhealthy';
@@ -95,11 +96,40 @@ export class SecureHealthServer {
 
   private authorizeShutdown(header?: string): boolean {
     if (!this.shutdownToken) return false;
-    return header?.replace(/^Bearer\s+/i, '') === this.shutdownToken;
+    const provided = (header || '').replace(/^Bearer\s+/i, '');
+    if (!provided) return false;
+    return safeEqual(provided, this.shutdownToken);
+  }
+
+  /** Maximum number of distinct rate-limit windows retained at once. */
+  private maxWindows = Number(process.env.GLEARN_HEALTH_RATE_LIMIT_MAX_KEYS || '10000');
+  private lastSweep = 0;
+
+  /**
+   * Opportunistically evict windows whose 60s span has fully elapsed so the Map
+   * cannot grow without bound under sustained unique-key load. Throttled to at
+   * most once per second. If the Map still exceeds `maxWindows`, the oldest
+   * entries are dropped (insertion order ≈ recency for active keys).
+   */
+  private sweepWindows(now: number): void {
+    if (now - this.lastSweep < 1_000 && this.windows.size <= this.maxWindows) return;
+    this.lastSweep = now;
+    for (const [key, window] of this.windows) {
+      if (now - window.startedAt >= 60_000) this.windows.delete(key);
+    }
+    if (this.windows.size > this.maxWindows) {
+      const overflow = this.windows.size - this.maxWindows;
+      let removed = 0;
+      for (const key of this.windows.keys()) {
+        if (removed++ >= overflow) break;
+        this.windows.delete(key);
+      }
+    }
   }
 
   private checkRate(key: string): { allowed: boolean; resetAt: string } {
     const now = Date.now();
+    this.sweepWindows(now);
     let window = this.windows.get(key);
     if (!window || now - window.startedAt >= 60_000) {
       window = { count: 0, startedAt: now };

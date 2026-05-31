@@ -1224,8 +1224,14 @@ export class GLearn {
       return [];
     }
 
-    const parsed = JSON.parse(raw);
-    const sources = Array.isArray(parsed) ? parsed : [parsed];
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      this.logger.error('Invalid GLEARN_DYAD_DATA JSON, ignoring DYAD data', { error });
+      return [];
+    }
+    const sources: any[] = Array.isArray(parsed) ? parsed : [parsed];
     return sources.map(source => ({
       ...source,
       source: 'dyad',
