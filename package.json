@@ -9,23 +9,23 @@
   },
   "exports": {
     ".": {
-      "types": "./dist/glearn/src/sdk.d.ts",
-      "import": "./dist/glearn/src/sdk.js",
-      "require": "./dist/glearn/src/sdk.js"
+      "types": "./dist/sdk.d.ts",
+      "import": "./dist/sdk.js",
+      "require": "./dist/sdk.js"
     },
     "./sdk": {
-      "types": "./dist/glearn/src/sdk.d.ts",
-      "import": "./dist/glearn/src/sdk.js",
-      "require": "./dist/glearn/src/sdk.js"
+      "types": "./dist/sdk.d.ts",
+      "import": "./dist/sdk.js",
+      "require": "./dist/sdk.js"
     },
     "./cli": {
-      "types": "./dist/glearn/src/cli.d.ts",
-      "import": "./dist/glearn/src/cli.js",
-      "require": "./dist/glearn/src/cli.js"
+      "types": "./dist/cli.d.ts",
+      "import": "./dist/cli.js",
+      "require": "./dist/cli.js"
     },
     "./client": {
-      "types": "./dist/glearn/src/client.d.ts",
-      "require": "./dist/glearn/src/client.js"
+      "types": "./dist/client.d.ts",
+      "require": "./dist/client.js"
     },
     "./package.json": "./package.json"
   },

@@ -9,6 +9,7 @@ import { GLearn } from '../core/glearn.js';
 import { LocalAuditLogger, coreLogger } from '../core/observability.js';
 import { createAuthMiddleware, type AuthConfig, type AuthToken } from '../core/shared-utils.js';
 import { getDefaultSecretManager, PermissionModel } from '../core/security.js';
+import { safeEqual } from '../security/crypto.js';
 
 type McpScope = 'read' | 'write';
 
@@ -70,11 +71,19 @@ class GLearnMCPServer {
     this.bootstrapToken = secrets.get('glearn_mcp_token');
     this.bootstrapScopes = this.parseScopes(env.GLEARN_MCP_TOKEN_SCOPES || 'read,write');
 
-    this.authMiddleware = createAuthMiddleware(authConfig || {
-      secret: secrets.get('glearn_auth_secret') || 'dev-secret-key',
-      tool: 'glearn',
-      defaultRoles: this.defaultScopes,
-    });
+    let resolvedConfig = authConfig;
+    if (!resolvedConfig) {
+      const authSecret = secrets.get('glearn_auth_secret');
+      if (!authSecret) {
+        throw new Error('GLEARN_AUTH_SECRET must be configured. Set the glearn_auth_secret secret.');
+      }
+      resolvedConfig = {
+        secret: authSecret,
+        tool: 'glearn',
+        defaultRoles: this.defaultScopes,
+      };
+    }
+    this.authMiddleware = createAuthMiddleware(resolvedConfig);
     this.rateLimitRpm = this.parseLimit(env.GLEARN_RATE_LIMIT_RPM, 60);
     this.rateLimitRph = this.parseLimit(env.GLEARN_RATE_LIMIT_RPH, 1000);
 
@@ -330,7 +339,7 @@ class GLearnMCPServer {
     if (issued && issued.expiresAt >= Date.now()) {
       return this.permissions.scopesForToken(token, issued.scopes).filter((scope): scope is McpScope => scope === 'read' || scope === 'write');
     }
-    if (this.bootstrapToken && token === this.bootstrapToken) {
+    if (this.bootstrapToken && safeEqual(token, this.bootstrapToken)) {
       return this.permissions.scopesForToken(token, this.bootstrapScopes).filter((scope): scope is McpScope => scope === 'read' || scope === 'write');
     }
     if (this.bootstrapToken) {

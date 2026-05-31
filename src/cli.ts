@@ -2,6 +2,8 @@
 
 import { Command } from 'commander';
 import chalk from 'chalk';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { GLearn } from './core/glearn.js';
 import { GBrainIntegrationClient } from './core/gbrain-integration.js';
 import { GStackGBrainSync } from './core/gstack-gbrain-sync.js';
@@ -31,12 +33,30 @@ function requireServices(commandName: string): void {
   }
 }
 
+/**
+ * Resolve the CLI version from package.json so `glearn --version` always
+ * matches the published package version. The compiled CLI lives at dist/cli.js,
+ * so package.json is one directory up; we also fall back to the repo root for
+ * running directly from source.
+ */
+function resolvePackageVersion(): string {
+  for (const candidate of [join(__dirname, '..', 'package.json'), join(__dirname, '..', '..', 'package.json')]) {
+    try {
+      const pkg = JSON.parse(readFileSync(candidate, 'utf8')) as { version?: string };
+      if (pkg.version) return pkg.version;
+    } catch {
+      // try next candidate
+    }
+  }
+  return '0.0.0';
+}
+
 const program = new Command();
 
 program
   .name('glearn')
   .description('Meta-learning and reflective layer for the G-Stack')
-  .version('0.1.0');
+  .version(resolvePackageVersion());
 
 program
   .command('backup [destination]')

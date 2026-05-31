@@ -62,6 +62,31 @@ function checkPackageContract() {
   if (!exists('scripts/eval-tools.js')) fail('missing scripts/eval-tools.js');
   if (!exists('jest.config.js')) fail('missing jest.config.js');
   if (!exists('tsconfig.json')) fail('missing tsconfig.json');
+  if (!exists('LICENSE')) fail('missing LICENSE file (declared license: ' + pkg.license + ')');
+
+  // Validate that main/types/bin/exports targets exist on disk after build.
+  // Only enforced once dist/ has been produced so the gate can run pre-build too.
+  const distBuilt = exists('dist');
+  if (distBuilt) {
+    const targets = [];
+    const addTarget = (value) => {
+      if (typeof value === 'string' && value.startsWith('./dist')) targets.push(value);
+    };
+    addTarget(pkg.main);
+    addTarget(pkg.types);
+    if (pkg.bin) for (const b of Object.values(pkg.bin)) addTarget(b);
+    if (pkg.exports) {
+      for (const entry of Object.values(pkg.exports)) {
+        if (typeof entry === 'string') addTarget(entry);
+        else if (entry && typeof entry === 'object') for (const v of Object.values(entry)) addTarget(v);
+      }
+    }
+    for (const target of targets) {
+      if (!exists(target.replace(/^\.\//, ''))) {
+        fail(`package entry point target does not exist after build: ${target}`);
+      }
+    }
+  }
   ok('package contract');
 }
 
