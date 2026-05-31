@@ -55,6 +55,11 @@ function checkPackageContract() {
   if (!pkg.version) fail('package.json missing version');
   if (!pkg.description) fail('package.json missing description');
   if (!pkg.license) fail('package.json missing license');
+  if (!pkg.author) fail('package.json missing author');
+  if (!pkg.homepage) fail('package.json missing homepage');
+  if (!pkg.repository) fail('package.json missing repository');
+  if (!pkg.bugs || !pkg.bugs.url) fail('package.json missing bugs.url');
+  if (!Array.isArray(pkg.keywords) || pkg.keywords.length === 0) fail('package.json missing keywords');
   if (!pkg.engines || !pkg.engines.node) fail('package.json missing engines.node');
   if (!pkg.bin || Object.keys(pkg.bin).length === 0) fail('package.json missing bin entry');
   if (!exists('src/cli.ts')) fail('missing src/cli.ts');
