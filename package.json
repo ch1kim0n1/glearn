@@ -2,6 +2,22 @@
   "name": "glearn",
   "version": "0.5.0",
   "description": "Meta-learning and reflective layer for the G-Stack",
+  "keywords": [
+    "ai",
+    "mcp",
+    "model-context-protocol",
+    "meta-learning",
+    "developer-tools"
+  ],
+  "author": "Vladislav K",
+  "homepage": "https://github.com/ch1kim0n1/glearn#readme",
+  "bugs": {
+    "url": "https://github.com/ch1kim0n1/glearn/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ch1kim0n1/glearn.git"
+  },
   "main": "./dist/core/index.js",
   "types": "./dist/core/index.d.ts",
   "bin": {
